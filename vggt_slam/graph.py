@@ -34,21 +34,51 @@ class PoseGraph:
         self.initialized_nodes = set()
         self.num_loop_closures = 0 # Just used for debugging and analysis
     def scale_all_poses(self, scale_factor):
-        """Scale all pose positions by the given factor"""
+        """Scale all pose positions by the given factor while maintaining SL(4) constraints"""
         print(f"Scaling all poses by factor: {scale_factor}")
         
         # 创建一个新的Values对象来存储缩放后的位姿
         new_values = Values()
         
         for key in self.initialized_nodes:
-            H = self.values.atSL4(key).matrix()
-            # 只缩放位置部分，不缩放方向
-            H[0:3, 3] = H[0:3, 3] * scale_factor
-            new_values.insert(key, SL4(H))
+            H = self.values.atSL4(key).matrix().copy()
+            
+            # 正确提取3D位置（考虑齐次坐标）
+            position = H[0:3, 3] / H[3, 3]
+            
+            # 缩放位置
+            scaled_position = position * scale_factor
+            
+            # 创建新的变换矩阵 - 保持齐次坐标的最后一行不变
+            H_new = H.copy()
+            H_new[0:3, 3] = scaled_position * H[3, 3]
+            
+            # 确保行列式为正的关键步骤
+            det = np.linalg.det(H_new)
+            if det < 0:
+                # 通过翻转整个矩阵来使行列式为正
+                # 这不会改变3D几何，只会改变方向（镜像）
+                H_new = -H_new
+                det = np.linalg.det(H_new)
+                print(f"Adjusted sign of pose {key} to make determinant positive")
+            
+            # 归一化使行列式为1（SL(4)要求）
+            H_new = H_new / (np.abs(det) ** (1/4))
+            
+            # 验证行列式是否为正
+            final_det = np.linalg.det(H_new)
+            if final_det <= 0:
+                print(f"Error: Determinant still not positive for pose {key}: {final_det}")
+                continue
+                
+            new_values.insert(key, SL4(H_new))
         
         # 替换values并重新优化
         self.values = new_values
-        self.optimize()
+        self.ptimize()
+
+
+
 
     def visualize_gnss_constraints(self):
         """Plot GNSS measurements vs optimized positions"""
@@ -80,25 +110,37 @@ class PoseGraph:
         plt.grid(True)
         plt.savefig('gnss_visualization.png')
         plt.show()
-    def test_add_gnss(self, gnss_measurements):
-        """Add GNSS measurements as prior factors to the pose graph."""  
-        for frame_idx, enu in enumerate(gnss_measurements):
-            # 确保enu是numpy数组
-            if not isinstance(enu, np.ndarray):
-                enu = np.array(enu)
+    def test_add_gnss(self, gnss_measurements, scale_factor=1.0):
+        """
+        Add GNSS measurements as prior factors to the pose graph with scale handling.
+        
+        Args:
+            gnss_measurements: List of (lat, lon, alt) tuples
+            scale_factor: Scale factor to apply to GNSS measurements (1.0 = no scaling)
+        """
+        for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
+            # 转换为ENU坐标
+            enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
             
-            print(f"Frame {frame_idx} GNSS ENU: {enu}")
-            
-            # 创建SL4矩阵，只设置位置部分
+            # 应用尺度因子 - 关键修改：缩放GNSS测量值而非位姿
+            enu_scaled = enu / scale_factor
+            print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
+            self.gnss_processor.add_enu2history(enu_scaled)
+            # 创建SL4矩阵
             H_gnss = np.eye(4)
-            H_gnss[0:3, 3] = enu  # 设置平移部分
+            H_gnss[0:3, 3] = enu_scaled  # 设置缩放后的平移部分
             
             # 创建噪声模型 - 只约束位置，不约束方向
-            # 对于SL4的15个自由度，我们只约束最后3个（位置）
             noise_vector = np.ones(15) * 1e6  # 高噪声表示不约束
-            # 根据您的GNSS设备精度调整这些值
+            # 根据GNSS设备精度调整这些值
             horizontal_noise = 1.0  # 水平方向噪声（米）
-            vertical_noise = 2.0    # 垂直方向噪声（米）
+            vertical_noise = 1.0    # 垂直方向噪声（米）
+            
+            # 重要：根据尺度因子调整噪声
+            # 如果尺度因子很大，GNSS噪声在视觉尺度下会变小
+            horizontal_noise /= scale_factor
+            vertical_noise /= scale_factor
+            
             noise_vector[-3] = horizontal_noise  # x (East)
             noise_vector[-2] = horizontal_noise  # y (North)
             noise_vector[-1] = vertical_noise    # z (Up)
@@ -113,6 +155,7 @@ class PoseGraph:
             else:
                 print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
 
+
     def add_gnss(self, gnss_measurements):
         """
         Add GNSS measurements as prior factors to the pose graph.
@@ -120,16 +163,10 @@ class PoseGraph:
         Args:
             gnss_measurements: List of (lat, lon, alt) tuples for each frame
         """
-        if self.initialized_gnss:
-            # Set the first GNSS measurement as the reference point
-            self.gnss_processor.setReference(gnss_measurements[0])
-            self.initialized_gnss = False
-            print(f"Set GNSS reference point: {gnss_measurements[0]}")
-
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # Convert LLA to ENU (East, North, Up) coordinates
             enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
-            print(f"Frame {frame_idx} GNSS ENU: {enu}")
+            # print(f"Frame {frame_idx} GNSS ENU: {enu}")
             H_gnss = np.eye(4)
             H_gnss[0:3, 3] = enu 
             horizontal_noise = 1.0 
@@ -144,7 +181,7 @@ class PoseGraph:
             key = X(frame_idx)
             if key in self.initialized_nodes:
                 self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
-                print(f"Added GNSS prior factor for frame {frame_idx}")
+                # print(f"Added GNSS prior factor for frame {frame_idx}")
             else:
                 print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
     def add_homography(self, key, global_h):
@@ -188,12 +225,7 @@ class PoseGraph:
         optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.values)
         result = optimizer.optimize()
         self.values = result  # Update values with optimized results
-    def test_optimize(self):
-        #params = gtsam.LevenbergMarquardtParams()
-        #params.setVerbosityLM("SUMMARY")  # 打印优化摘要
-        optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.values)
-        result = optimizer.optimize()
-        self.values = result
+
     def print_estimates(self):
         """Print the optimized poses."""
         for key in sorted(self.initialized_nodes):

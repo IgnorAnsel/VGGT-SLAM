@@ -29,9 +29,10 @@ class GNSSprocesser:
             north - self.ref_north,
             alt - self.ref_alt
         ])
-        self.enu_history.append(enu)
+        # self.enu_history.append(enu)
         return enu
-    
+    def add_enu2history(self, enu):
+        self.enu_history.append(enu)
 if __name__ == "__main__":
     gnss = GNSSprocesser()
     gnss.setReference([30.411221, 104.077182, 707])
