@@ -32,7 +32,7 @@ parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of
 parser.add_argument("--plot_focal_lengths", action="store_true", help="Plot focal lengths for the submaps")
 parser.add_argument("--submap_size", type=int, default=3, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
-parser.add_argument("--downsample_factor", type=int, default=1, help="Factor to reduce image size by 1/N")
+parser.add_argument("--downsample_factor", type=int, default=5, help="Factor to reduce image size by 1/N")
 parser.add_argument("--max_loops", type=int, default=1, help="Maximum number of loop closures per submap")
 parser.add_argument("--min_disparity", type=float, default=5, help="Minimum disparity to generate a new keyframe")
 parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
@@ -96,7 +96,7 @@ def main():
     image_names = [f for f in glob.glob(os.path.join(image_folder, "*")) 
                if "depth" not in os.path.basename(f).lower() and "txt" not in os.path.basename(f).lower() 
                and "db" not in os.path.basename(f).lower()]
-
+    
     image_names = utils.sort_images_by_number(image_names)
     image_names = utils.downsample_images(image_names, args.downsample_factor)
     print(f"Found {len(image_names)} images")
@@ -106,8 +106,10 @@ def main():
     data = []
     total_images = len(image_names)
     half_point = total_images // 1
+    solver.graph.gnss_processor.setReference(gps_info_1)
     for i, image_name in enumerate(tqdm(image_names)):
-        gps_info_2 = vp_.read_exif_from_image(image_names[i+1])
+        gps_info_2 = vp_.read_exif_from_image(image_name)
+        print("gps_info_2", gps_info_2)
         if use_optical_flow_downsample:
             # print(image_name)
             img = cv2.imread(image_name)
@@ -119,10 +121,10 @@ def main():
                 break
             if enough_disparity:
                 image_names_subset.append(image_name)
-                real_t_subset.append(process_data(gps_info_1, gps_info_2)/422.0)
+                real_t_subset.append(gps_info_2)
         else:
             image_names_subset.append(image_name)
-            real_t_subset.append(process_data(gps_info_1, gps_info_2)/422.0)
+            real_t_subset.append(gps_info_2)
 
         # Run submap processing if enough images are collected or if it's the last group of images.
         if len(image_names_subset) == args.submap_size + args.overlapping_window_size or image_name == image_names[-1]:
@@ -132,7 +134,7 @@ def main():
             data.append(predictions["intrinsic"][:,0,0])
             solver.add_points(predictions)
 
-            solver.graph.optimize()
+            solver.graph.test_optimize()
             solver.map.update_submap_homographies(solver.graph)
 
             loop_closure_detected = len(predictions["detected_loops"]) > 0
@@ -145,7 +147,7 @@ def main():
             # Reset for next submap.
             image_names_subset = image_names_subset[-args.overlapping_window_size:]
             real_t_subset = real_t_subset[-args.overlapping_window_size:]
-        
+    solver.graph.visualize_gnss_constraints()
     print("Total number of submaps in map", solver.map.get_num_submaps())
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 

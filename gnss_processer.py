@@ -6,7 +6,7 @@ class GNSSprocesser:
         self.ref_lat, self.ref_lon, self.ref_alt = None, None, None
         self.reference_lla = None
         self.reference_enu = None
-        
+        self.enu_history = []
 
     def setReference(self, reference_lla):
         self.reference_lla = reference_lla
@@ -18,16 +18,19 @@ class GNSSprocesser:
             ellps='WGS84',
             south=False
         )
+        self.enu_history = []
         self.ref_east, self.ref_north = self.utm_transformer(self.ref_lon, self.ref_lat)
         # print(self.ref_east, self.ref_north)
     def lla_to_enu(self, lat, lon, alt):
         """将WGS84坐标转换为局部ENU坐标系"""
         east, north = self.utm_transformer(lon, lat)
-        return np.array([
+        enu = np.array([
             east - self.ref_east,
             north - self.ref_north,
             alt - self.ref_alt
         ])
+        self.enu_history.append(enu)
+        return enu
     
 if __name__ == "__main__":
     gnss = GNSSprocesser()

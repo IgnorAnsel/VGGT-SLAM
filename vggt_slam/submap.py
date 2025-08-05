@@ -172,4 +172,31 @@ class Submap:
     def get_points_colors(self):
         colors = self.filter_data_by_confidence(self.colors)
         return colors.reshape(-1, 3)
+    def scale_points(self, scale_factor):
+        """Scale all points in this submap by the given factor"""
+        if hasattr(self, 'pointclouds') and self.pointclouds is not None:
+            # 缩放点云
+            self.pointclouds = self.pointclouds * scale_factor
+            
+            # 如果有其他与尺度相关的数据，也需要缩放
+            if hasattr(self, 'conf'):
+                self.conf = self.conf * scale_factor  # 如果conf与距离相关
+    
+    def test_get_points_in_world_frame(self, scale_factor=1.0):
+        """
+        获取世界坐标系中的点，考虑尺度缩放
+        
+        Args:
+            scale_factor: 缩放因子，默认为1.0（无缩放）
+        """
+        points = self.filter_data_by_confidence(self.pointclouds)
+        
+        # 应用尺度缩放
+        points = points * scale_factor
+        
+        points_flat = points.reshape(-1, 3)
+        points_homogeneous = np.hstack([points_flat, np.ones((points_flat.shape[0], 1))])
+        points_transformed = (self.H_world_map @ points_homogeneous.T).T
+        return points_transformed[:, :3] / points_transformed[:, 3:]
+
 

@@ -172,7 +172,11 @@ class VideoProcess:
                 }
 
             # pprint(gps_info)
-            return gps_info
+            return (
+                float(gps_info.get("latitude")),
+                float(gps_info.get("longitude")),
+                float(gps_info.get("altitude"))
+            )
         
         except Exception as e:
             print(f"读取 EXIF 失败: {e}")

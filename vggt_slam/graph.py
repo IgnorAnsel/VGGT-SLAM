@@ -1,3 +1,6 @@
+import os
+os.environ.update({"QT_QPA_PLATFORM_PLUGIN_PATH": "/home/ansel/anaconda3/envs/mast3r-slam/lib/python3.11/site-packages/cv2/qt/plugins/platforms"})
+
 import gtsam
 import numpy as np
 import matplotlib.pyplot as plt
@@ -30,7 +33,120 @@ class PoseGraph:
         self.anchor_noise = noiseModel.Diagonal.Sigmas([1e-6] * 15)
         self.initialized_nodes = set()
         self.num_loop_closures = 0 # Just used for debugging and analysis
+    def scale_all_poses(self, scale_factor):
+        """Scale all pose positions by the given factor"""
+        print(f"Scaling all poses by factor: {scale_factor}")
+        
+        # 创建一个新的Values对象来存储缩放后的位姿
+        new_values = Values()
+        
+        for key in self.initialized_nodes:
+            H = self.values.atSL4(key).matrix()
+            # 只缩放位置部分，不缩放方向
+            H[0:3, 3] = H[0:3, 3] * scale_factor
+            new_values.insert(key, SL4(H))
+        
+        # 替换values并重新优化
+        self.values = new_values
+        self.optimize()
 
+    def visualize_gnss_constraints(self):
+        """Plot GNSS measurements vs optimized positions"""
+        positions = []
+        for key in sorted(self.initialized_nodes):
+            H = self.values.atSL4(key).matrix()
+            # Extract position from SL4 (assuming H[3,3] != 0)
+            pos = H[0:3, 3] / H[3, 3]
+            positions.append(pos)
+        
+        positions = np.array(positions)
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(positions[:, 0], positions[:, 1], 'b-', label='Optimized Trajectory')
+        plt.scatter(positions[:, 0], positions[:, 1], c=range(len(positions)), 
+                cmap='viridis', label='Optimized Positions')
+        
+        # Plot GNSS measurements if available
+        if hasattr(self.gnss_processor, 'enu_history') and len(self.gnss_processor.enu_history) > 0:
+            gnss_positions = np.array(self.gnss_processor.enu_history)
+            plt.scatter(gnss_positions[:, 0], gnss_positions[:, 1], 
+                    c='r', marker='x', s=100, label='GNSS Measurements')
+        
+        plt.xlabel('East (m)')
+        plt.ylabel('North (m)')
+        plt.title('Trajectory with GNSS Constraints')
+        plt.legend()
+        plt.axis('equal')
+        plt.grid(True)
+        plt.savefig('gnss_visualization.png')
+        plt.show()
+    def test_add_gnss(self, gnss_measurements):
+        """Add GNSS measurements as prior factors to the pose graph."""  
+        for frame_idx, enu in enumerate(gnss_measurements):
+            # 确保enu是numpy数组
+            if not isinstance(enu, np.ndarray):
+                enu = np.array(enu)
+            
+            print(f"Frame {frame_idx} GNSS ENU: {enu}")
+            
+            # 创建SL4矩阵，只设置位置部分
+            H_gnss = np.eye(4)
+            H_gnss[0:3, 3] = enu  # 设置平移部分
+            
+            # 创建噪声模型 - 只约束位置，不约束方向
+            # 对于SL4的15个自由度，我们只约束最后3个（位置）
+            noise_vector = np.ones(15) * 1e6  # 高噪声表示不约束
+            # 根据您的GNSS设备精度调整这些值
+            horizontal_noise = 1.0  # 水平方向噪声（米）
+            vertical_noise = 2.0    # 垂直方向噪声（米）
+            noise_vector[-3] = horizontal_noise  # x (East)
+            noise_vector[-2] = horizontal_noise  # y (North)
+            noise_vector[-1] = vertical_noise    # z (Up)
+            
+            gnss_noise = noiseModel.Diagonal.Sigmas(noise_vector)
+            
+            # 添加先验因子
+            key = X(frame_idx)
+            if key in self.initialized_nodes:
+                self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
+                print(f"Added GNSS prior factor for frame {frame_idx}")
+            else:
+                print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
+
+    def add_gnss(self, gnss_measurements):
+        """
+        Add GNSS measurements as prior factors to the pose graph.
+        
+        Args:
+            gnss_measurements: List of (lat, lon, alt) tuples for each frame
+        """
+        if self.initialized_gnss:
+            # Set the first GNSS measurement as the reference point
+            self.gnss_processor.setReference(gnss_measurements[0])
+            self.initialized_gnss = False
+            print(f"Set GNSS reference point: {gnss_measurements[0]}")
+
+        for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
+            # Convert LLA to ENU (East, North, Up) coordinates
+            enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
+            print(f"Frame {frame_idx} GNSS ENU: {enu}")
+            H_gnss = np.eye(4)
+            H_gnss[0:3, 3] = enu 
+            horizontal_noise = 1.0 
+            vertical_noise = 1.0  
+            
+            noise_vector = np.ones(15) * 1e6 
+            noise_vector[-3] = horizontal_noise  # x (East)
+            noise_vector[-2] = horizontal_noise  # y (North)
+            noise_vector[-1] = vertical_noise    # z (Up)
+            gnss_noise = noiseModel.Diagonal.Sigmas(noise_vector)
+            
+            key = X(frame_idx)
+            if key in self.initialized_nodes:
+                self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
+                print(f"Added GNSS prior factor for frame {frame_idx}")
+            else:
+                print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
     def add_homography(self, key, global_h):
         """Add a new homography node to the graph."""
         print("det(global_h)", np.linalg.det(global_h))
@@ -72,7 +188,12 @@ class PoseGraph:
         optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.values)
         result = optimizer.optimize()
         self.values = result  # Update values with optimized results
-
+    def test_optimize(self):
+        #params = gtsam.LevenbergMarquardtParams()
+        #params.setVerbosityLM("SUMMARY")  # 打印优化摘要
+        optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.values)
+        result = optimizer.optimize()
+        self.values = result
     def print_estimates(self):
         """Print the optimized poses."""
         for key in sorted(self.initialized_nodes):

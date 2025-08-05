@@ -53,10 +53,6 @@ class PoseGraph:
         result = optimizer.optimize()
         self.values = result  # Update values with optimized results
     def test_optimize(self):
-        robust_noise = gtsam.noiseModel.Robust.Create(
-        gtsam.noiseModel.Huber.Create(1.0),
-        gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
-        )
         # 运行优化
         params = gtsam.LevenbergMarquardtParams()
         params.setVerbosityLM("SUMMARY")  # 打印优化摘要
