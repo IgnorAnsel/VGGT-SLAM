@@ -121,8 +121,7 @@ class PoseGraph:
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # 转换为ENU坐标
             enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
-            
-            # 应用尺度因子 - 关键修改：缩放GNSS测量值而非位姿
+            scale_factor = 246.0
             enu_scaled = enu / scale_factor
             print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
             self.gnss_processor.add_enu2history(enu_scaled)
@@ -130,11 +129,10 @@ class PoseGraph:
             H_gnss = np.eye(4)
             H_gnss[0:3, 3] = enu_scaled  # 设置缩放后的平移部分
             
-            # 创建噪声模型 - 只约束位置，不约束方向
             noise_vector = np.ones(15) * 1e6  # 高噪声表示不约束
             # 根据GNSS设备精度调整这些值
-            horizontal_noise = 1.0  # 水平方向噪声（米）
-            vertical_noise = 1.0    # 垂直方向噪声（米）
+            horizontal_noise = 0.1  # 水平方向噪声（米）
+            vertical_noise = 0.1    # 垂直方向噪声（米）
             
             # 重要：根据尺度因子调整噪声
             # 如果尺度因子很大，GNSS噪声在视觉尺度下会变小
@@ -186,7 +184,7 @@ class PoseGraph:
                 print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
     def add_homography(self, key, global_h):
         """Add a new homography node to the graph."""
-        print("det(global_h)", np.linalg.det(global_h))
+        # print("det(global_h)", np.linalg.det(global_h))
         key = X(key)
         if key in self.initialized_nodes:
             print(f"SL4 {key} already exists.")

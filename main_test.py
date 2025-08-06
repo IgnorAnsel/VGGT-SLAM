@@ -32,7 +32,7 @@ parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of
 parser.add_argument("--plot_focal_lengths", action="store_true", help="Plot focal lengths for the submaps")
 parser.add_argument("--submap_size", type=int, default=3, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
-parser.add_argument("--downsample_factor", type=int, default=1, help="Factor to reduce image size by 1/N")
+parser.add_argument("--downsample_factor", type=int, default=2, help="Factor to reduce image size by 1/N")
 parser.add_argument("--max_loops", type=int, default=1, help="Maximum number of loop closures per submap")
 parser.add_argument("--min_disparity", type=float, default=5, help="Minimum disparity to generate a new keyframe")
 parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
@@ -133,7 +133,7 @@ def main():
 
             data.append(predictions["intrinsic"][:,0,0])
             solver.test_add_points(predictions, real_t_subset)
-
+            # solver.add_points(predictions)
             solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
 

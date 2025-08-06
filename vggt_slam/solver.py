@@ -89,7 +89,7 @@ class Viewer:
                 frame_name,
                 wxyz=T_world_camera.rotation().wxyz,
                 position=T_world_camera.translation(),
-                axes_length=0.045,
+                axes_length=0.015,
                 axes_radius=0.0015,
                 origin_radius=0.002,
             )
@@ -350,7 +350,7 @@ class Solver:
             # Add between factor.
             self.graph.add_between_factor(prior_pcd_num, new_pcd_num, H_relative, self.graph.relative_noise)
 
-            print("added between factor", prior_pcd_num, new_pcd_num, H_relative)
+            # print("added between factor", prior_pcd_num, new_pcd_num, H_relative)
 
         # Create and add submap.
         self.current_working_submap.set_reference_homography(H_w_submap)
@@ -379,8 +379,8 @@ class Solver:
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
 
-            print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
-            print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
+            # print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
+            # print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
 
             # print("relative_pose factor added", relative_pose)
 
@@ -651,7 +651,8 @@ class Solver:
         # TODO implement this
         detected_loops = self.image_retrieval.find_loop_closures(self.map, new_submap, max_loop_closures=max_loops)
         if len(detected_loops) > 0:
-            print(colored("detected_loops", "yellow"), detected_loops)
+            # print(colored("detected_loops", "yellow"), detected_loops)
+            pass
         retrieved_frames = self.map.get_frames_from_loops(detected_loops)
 
         num_loop_frames = len(retrieved_frames)

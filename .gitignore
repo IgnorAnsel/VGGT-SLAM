@@ -165,3 +165,5 @@ skyseg.onnx
 /salad/
 /vggt/
 /.idea/
+/results/
+poses.txt

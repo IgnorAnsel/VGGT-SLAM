@@ -26,7 +26,7 @@ class GNSSprocesser:
         east, north = self.utm_transformer(lon, lat)
         enu = np.array([
             east - self.ref_east,
-            north - self.ref_north,
+            -(north - self.ref_north),
             alt - self.ref_alt
         ])
         # self.enu_history.append(enu)
