@@ -110,7 +110,7 @@ class PoseGraph:
         plt.grid(True)
         plt.savefig('gnss_visualization.png')
         plt.show()
-    def test_add_gnss(self, gnss_measurements, scale_factor=1.0):
+    def test_add_gnss(self, gnss_measurements, scale_factor=250.0):
         """
         Add GNSS measurements as prior factors to the pose graph with scale handling.
         
@@ -121,7 +121,7 @@ class PoseGraph:
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # 转换为ENU坐标
             enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
-            scale_factor = 246.0
+            # scale_factor = 246.0
             enu_scaled = enu / scale_factor
             print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
             self.gnss_processor.add_enu2history(enu_scaled)
@@ -131,8 +131,8 @@ class PoseGraph:
             
             noise_vector = np.ones(15) * 1e6  # 高噪声表示不约束
             # 根据GNSS设备精度调整这些值
-            horizontal_noise = 0.1  # 水平方向噪声（米）
-            vertical_noise = 0.1    # 垂直方向噪声（米）
+            horizontal_noise = 0.5  # 水平方向噪声（米）
+            vertical_noise = 0.5    # 垂直方向噪声（米）
             
             # 重要：根据尺度因子调整噪声
             # 如果尺度因子很大，GNSS噪声在视觉尺度下会变小

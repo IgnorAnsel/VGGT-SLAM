@@ -174,9 +174,9 @@ class Solver:
         print("Starting viser server...")
     def align_scale(self):
         """计算尺度因子但不直接缩放位姿 - 通过GNSS约束引导优化"""
-        if len(self.visual_positions) < 2:
-            print("Warning: Not enough points for scale alignment")
-            return False
+        # if len(self.visual_positions) < 2:
+        #     print("Warning: Not enough points for scale alignment")
+        #     return False
         
         # 计算从起点到各点的距离比例
         scale_factors = []
@@ -547,7 +547,7 @@ class Solver:
                 self.gnss_positions.append(current_gnss)
                 
                 # 检查是否可以进行尺度对齐
-                if not self.scale_aligned:
+                if True:
                     # 计算当前段的尺度因子
                     visual_dist = np.linalg.norm(visual_delta)
                     gnss_dist = np.linalg.norm(gnss_delta)
@@ -555,11 +555,11 @@ class Solver:
                     if visual_dist > 0.01:
                         scale_estimate = gnss_dist / visual_dist
                         print(f"Scale estimate from frame {len(self.visual_positions)-1} to {len(self.visual_positions)}: {scale_estimate:.4f}")
-                        
+                        self.align_scale()
                         # 如果有足够的估计点，计算全局尺度
-                        if len(self.visual_positions) >= 3:
-                            self.align_scale()
-                            self.scale_aligned = True
+                        # if len(self.visual_positions) >= 3:
+                        #     self.align_scale()
+                        #     self.scale_aligned = True
             
             # 更新最后位置
             self.last_visual_pos = current_visual_pos
@@ -611,7 +611,7 @@ class Solver:
         self.map.add_submap(self.current_working_submap)
         # 如果已经对齐尺度，应用到GNSS约束
         if gnss_measurements is not None and len(gnss_measurements) > 0:
-                if self.scale_aligned:
+                if True:
                     # 创建缩放后的GNSS测量 - 但不是缩放位姿，而是调整GNSS噪声
                     print(f"Applying scale factor {self.scale_factor:.4f} to GNSS constraints")
                     self.graph.test_add_gnss(gnss_measurements, scale_factor=self.scale_factor)
