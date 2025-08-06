@@ -7,11 +7,12 @@ class GNSSprocesser:
         self.reference_lla = None
         self.reference_enu = None
         self.enu_history = []
-
+        self.reference_set = False
     def setReference(self, reference_lla):
         self.reference_lla = reference_lla
         self.ref_lat, self.ref_lon, self.ref_alt = reference_lla[0], reference_lla[1], reference_lla[2]
         self.zone = int((self.ref_lon + 180) // 6) + 1
+        self.reference_set = True
         self.utm_transformer = Proj(
             proj='utm', 
             zone=self.zone, 
@@ -21,6 +22,12 @@ class GNSSprocesser:
         self.enu_history = []
         self.ref_east, self.ref_north = self.utm_transformer(self.ref_lon, self.ref_lat)
         # print(self.ref_east, self.ref_north)
+    def gps_to_enu(self, gps_info):
+        lat = gps_info[0]
+        lon = gps_info[1]
+        alt = gps_info[2]
+        enu = self.lla_to_enu(lat, lon, alt)
+        return enu
     def lla_to_enu(self, lat, lon, alt):
         """将WGS84坐标转换为局部ENU坐标系"""
         east, north = self.utm_transformer(lon, lat)

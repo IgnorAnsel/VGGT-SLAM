@@ -106,7 +106,7 @@ def main():
     data = []
     total_images = len(image_names)
     half_point = total_images // 1
-    solver.graph.gnss_processor.setReference(gps_info_1)
+    solver.gnss_processer.setReference(gps_info_1)
     for i, image_name in enumerate(tqdm(image_names)):
         gps_info_2 = vp_.read_exif_from_image(image_name)
         # print("gps_info_2", gps_info_2)
@@ -147,7 +147,12 @@ def main():
             # Reset for next submap.
             image_names_subset = image_names_subset[-args.overlapping_window_size:]
             real_t_subset = real_t_subset[-args.overlapping_window_size:]
-    solver.graph.visualize_gnss_constraints()
+    if len(solver.visual_positions) >= 2 and not solver.scale_aligned:
+        solver.align_scale()
+        solver.apply_scale_to_poses()
+        solver.add_gnss_constraints()
+        solver.graph.optimize()
+    # solver.graph.visualize_gnss_constraints()
     print("Total number of submaps in map", solver.map.get_num_submaps())
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 

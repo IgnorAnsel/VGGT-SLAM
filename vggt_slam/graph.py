@@ -14,71 +14,13 @@ from gnss_processer import GNSSprocesser
 class PoseGraph:
     def __init__(self):
         """Initialize a factor graph for Pose3 nodes with BetweenFactors."""
-        self.gnss_processor = GNSSprocesser() # 加入gnss处理
+        self.gnss_processer = GNSSprocesser() # 加入gnss处理
         self.graph = NonlinearFactorGraph()
         self.values = Values()
-        # n = 0.05*np.ones(15, dtype=float)
-        # n[3] = 1e-6
-        # n[7] = 1e-6
-        # n[11] = 1e-6
-
-        # n[1] = 1e-6
-        # n[2] = 1e-6
-        # n[4] = 1e-6
-        # n[6] = 1e-6
-        # n[8] = 1e-6
-        # n[9] = 1e-6
-        # n[10] = 1e-6
         self.relative_noise = noiseModel.Diagonal.Sigmas(0.05*np.ones(15, dtype=float))
         self.anchor_noise = noiseModel.Diagonal.Sigmas([1e-6] * 15)
         self.initialized_nodes = set()
         self.num_loop_closures = 0 # Just used for debugging and analysis
-    def scale_all_poses(self, scale_factor):
-        """Scale all pose positions by the given factor while maintaining SL(4) constraints"""
-        print(f"Scaling all poses by factor: {scale_factor}")
-        
-        # 创建一个新的Values对象来存储缩放后的位姿
-        new_values = Values()
-        
-        for key in self.initialized_nodes:
-            H = self.values.atSL4(key).matrix().copy()
-            
-            # 正确提取3D位置（考虑齐次坐标）
-            position = H[0:3, 3] / H[3, 3]
-            
-            # 缩放位置
-            scaled_position = position * scale_factor
-            
-            # 创建新的变换矩阵 - 保持齐次坐标的最后一行不变
-            H_new = H.copy()
-            H_new[0:3, 3] = scaled_position * H[3, 3]
-            
-            # 确保行列式为正的关键步骤
-            det = np.linalg.det(H_new)
-            if det < 0:
-                # 通过翻转整个矩阵来使行列式为正
-                # 这不会改变3D几何，只会改变方向（镜像）
-                H_new = -H_new
-                det = np.linalg.det(H_new)
-                print(f"Adjusted sign of pose {key} to make determinant positive")
-            
-            # 归一化使行列式为1（SL(4)要求）
-            H_new = H_new / (np.abs(det) ** (1/4))
-            
-            # 验证行列式是否为正
-            final_det = np.linalg.det(H_new)
-            if final_det <= 0:
-                print(f"Error: Determinant still not positive for pose {key}: {final_det}")
-                continue
-                
-            new_values.insert(key, SL4(H_new))
-        
-        # 替换values并重新优化
-        self.values = new_values
-        self.ptimize()
-
-
-
 
     def visualize_gnss_constraints(self):
         """Plot GNSS measurements vs optimized positions"""
@@ -97,8 +39,8 @@ class PoseGraph:
                 cmap='viridis', label='Optimized Positions')
         
         # Plot GNSS measurements if available
-        if hasattr(self.gnss_processor, 'enu_history') and len(self.gnss_processor.enu_history) > 0:
-            gnss_positions = np.array(self.gnss_processor.enu_history)
+        if hasattr(self.gnss_processer, 'enu_history') and len(self.gnss_processer.enu_history) > 0:
+            gnss_positions = np.array(self.gnss_processer.enu_history)
             plt.scatter(gnss_positions[:, 0], gnss_positions[:, 1], 
                     c='r', marker='x', s=100, label='GNSS Measurements')
         
@@ -120,11 +62,11 @@ class PoseGraph:
         """
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # 转换为ENU坐标
-            enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
+            enu = self.gnss_processer.lla_to_enu(lat, lon, alt)
             # scale_factor = 246.0
             enu_scaled = enu / scale_factor
             print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
-            self.gnss_processor.add_enu2history(enu_scaled)
+            self.gnss_processer.add_enu2history(enu_scaled)
             # 创建SL4矩阵
             H_gnss = np.eye(4)
             H_gnss[0:3, 3] = enu_scaled  # 设置缩放后的平移部分
@@ -163,7 +105,7 @@ class PoseGraph:
         """
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # Convert LLA to ENU (East, North, Up) coordinates
-            enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
+            enu = self.gnss_processer.lla_to_enu(lat, lon, alt)
             # print(f"Frame {frame_idx} GNSS ENU: {enu}")
             H_gnss = np.eye(4)
             H_gnss[0:3, 3] = enu 

@@ -11,7 +11,7 @@ from termcolor import colored
 from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-
+from gtsam import noiseModel
 from vggt_slam.loop_closure import ImageRetrieval
 from vggt_slam.frame_overlap import FrameTracker
 from vggt_slam.map import GraphMap
@@ -126,7 +126,7 @@ class Viewer:
                 fr.visible = visible
 
 
-
+from gnss_processer import GNSSprocesser
 class Solver:
     def __init__(self,
         init_conf_threshold: float,  # represents percentage (e.g., 50 means filter lowest 50%)
@@ -138,7 +138,7 @@ class Solver:
         self.init_conf_threshold = init_conf_threshold
         self.use_point_map = use_point_map
         self.gradio_mode = gradio_mode
-
+        self.gnss_processer = GNSSprocesser()
         if self.gradio_mode:
             self.viewer = TrimeshViewer()
         else:
@@ -173,12 +173,12 @@ class Solver:
         
         print("Starting viser server...")
     def align_scale(self):
-        """计算尺度因子但不直接缩放位姿 - 通过GNSS约束引导优化"""
-        # if len(self.visual_positions) < 2:
-        #     print("Warning: Not enough points for scale alignment")
-        #     return False
-        
-        # 计算从起点到各点的距离比例
+        """Calculate scale factor between visual and GNSS trajectories"""
+        if len(self.visual_positions) < 2 or len(self.gnss_positions) < 2:
+            print("Warning: Not enough points for scale alignment")
+            return False
+            
+        # Calculate scale factors between consecutive points
         scale_factors = []
         for i in range(1, len(self.visual_positions)):
             visual_delta = self.visual_positions[i] - self.visual_positions[0]
@@ -187,20 +187,75 @@ class Solver:
             visual_dist = np.linalg.norm(visual_delta)
             gnss_dist = np.linalg.norm(gnss_delta)
             
-            if visual_dist > 0.01:  # 避免除以小值
+            if visual_dist > 0.01:  # Avoid division by small values
                 scale_factors.append(gnss_dist / visual_dist)
         
         if scale_factors:
             self.scale_factor = np.median(scale_factors)
             print(f"Scale alignment: visual scale factor = {self.scale_factor:.4f}")
-            self.scale_aligned = True            
-            print("Scale alignment complete. GNSS constraints will guide the optimizer.")
+            self.scale_aligned = True
             return True
-        else:
-            print("Warning: Could not compute scale factor")
-            return False
+        return False
 
-
+    def apply_scale_to_poses(self, world_points):
+        """Apply scale factor to all visual poses in the graph"""
+        if not self.scale_aligned:
+            print("Warning: Scale not aligned, cannot apply scaling")
+            return
+            
+        print(f"Applying scale factor {self.scale_factor:.4f} to all poses")
+        for submap in self.map.get_submaps():
+            # Get current homography
+            H = submap.get_reference_homography()
+            
+            # Scale the translation component
+            H_scaled = H.copy()
+            H_scaled[0:3, 3] *= self.scale_factor
+            
+            # Update the submap with scaled homography
+            submap.set_reference_homography(H_scaled)
+            
+            # Update all poses in the submap
+            scaled_poses = []
+            for pose in submap.poses:
+                pose_scaled = pose.copy()
+                pose_scaled[0:3, 3] *= self.scale_factor
+                scaled_poses.append(pose_scaled)
+            submap.poses = scaled_poses
+            world_points *= self.scale_factor
+            # # Update all point clouds in the submap
+            # for i in range(len(submap.points)):
+            #     if submap.points[i] is not None:
+            #         submap.points[i] = submap.points[i] * self.scale_factor
+    def add_gnss_constraints(self):
+        """Add GNSS position constraints to the factor graph"""
+        if not self.scale_aligned:
+            print("Warning: Scale not aligned, cannot add GNSS constraints")
+            return
+            
+        print("Adding GNSS constraints to factor graph...")
+        
+        # Create a noise model for GNSS measurements (1m standard deviation)
+        gnss_noise = noiseModel.Diagonal.Sigmas(np.array([1.0, 1.0, 1.0, 1e6, 1e6, 1e6]))
+        
+        for i, submap in enumerate(self.map.get_submaps()):
+            # Get the GNSS position for this submap's reference frame
+            if i < len(self.gnss_positions):
+                gnss_pos = self.gnss_positions[i]
+                
+                # Create a pose with GNSS position but visual rotation
+                H_w_submap = submap.get_reference_homography()
+                gnss_pose = np.eye(4)
+                gnss_pose[0:3, 0:3] = H_w_submap[0:3, 0:3]  # Keep visual rotation
+                gnss_pose[0:3, 3] = gnss_pos  # Use GNSS position
+                
+                # Add GNSS constraint to the graph
+                self.graph.add_prior_factor(
+                    submap.get_id(), 
+                    gnss_pose, 
+                    gnss_noise
+                )
+                print(f"Added GNSS constraint for submap {submap.get_id()} at {gnss_pos}")
     def set_point_cloud(self, points_in_world_frame, points_colors, name, point_size):
         if self.gradio_mode:
             self.viewer.add_point_cloud(points_in_world_frame, points_colors)
@@ -328,17 +383,6 @@ class Solver:
             
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
 
-            # Visualize the point clouds
-            # pcd1 = o3d.geometry.PointCloud()
-            # pcd1.points = o3d.utility.Vector3dVector(self.prior_pcd)
-            # pcd1 = color_point_cloud_by_confidence(pcd1, self.prior_conf)
-            # pcd2 = o3d.geometry.PointCloud()
-            # current_pts = world_points[0,...].reshape(-1, 3)
-            # points = apply_homography(H_relative, current_pts)
-            # pcd2.points = o3d.utility.Vector3dVector(points)
-            # # pcd2 = color_point_cloud_by_confidence(pcd2, conf_flat, cmap='jet')
-            # o3d.visualization.draw_geometries([pcd1, pcd2])
-
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
             self.prior_pcd = pts_cam0_camn
@@ -378,36 +422,8 @@ class Solver:
 
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
-
-            # print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
-            # print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
-
-            # print("relative_pose factor added", relative_pose)
-
-            # Visualize query and detected frames
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(loop.detected_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(loop.query_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
-
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
         self.map.add_submap(self.current_working_submap)
 
-        # Add GNSS measurements if available
-        # if gnss_measurements is not None and len(gnss_measurements) > 0:
-        #     print(f"Adding {len(gnss_measurements)} GNSS measurements to graph")
-        #     self.graph.add_gnss(gnss_measurements)
     def test_add_points(self, pred_dict, gnss_measurements=None):
         """
         Args:
@@ -493,17 +509,6 @@ class Solver:
             
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
 
-            # # Visualize the point clouds
-            # pcd1 = o3d.geometry.PointCloud()
-            # pcd1.points = o3d.utility.Vector3dVector(self.prior_pcd)
-            # pcd1 = color_point_cloud_by_confidence(pcd1, self.prior_conf)
-            # pcd2 = o3d.geometry.PointCloud()
-            # # current_pts = world_points[0,...].reshape(-1, 3)
-            # # points = apply_homography(H_relative, current_pts)
-            # # pcd2.points = o3d.utility.Vector3dVector(points)
-            # # # pcd2 = color_point_cloud_by_confidence(pcd2, conf_flat, cmap='jet')
-            # o3d.visualization.draw_geometries([pcd1, pcd2])
-
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
             self.prior_pcd = pts_cam0_camn
@@ -516,54 +521,29 @@ class Solver:
             self.graph.add_between_factor(prior_pcd_num, new_pcd_num, H_relative, self.graph.relative_noise)
 
             # print("added between factor", prior_pcd_num, new_pcd_num, H_relative)
-
+        if gnss_measurements is not None and len(gnss_measurements) > 0:
+            # Convert to ENU coordinates relative to first frame
+            enu_positions = []
+            for i, gps_info in enumerate(gnss_measurements):
+                if i == 0 and not self.gnss_processer.reference_set:
+                    # Set first frame as reference
+                    self.gnss_processer.setReference(gps_info)
+                
+                # Convert to ENU coordinates
+                enu = self.gnss_processer.gps_to_enu(gps_info)
+                enu_positions.append(enu)
+            
+            # Store positions for scale alignment
+            if len(enu_positions) > 0:
+                visual_pos = H_w_submap[0:3, 3]  # Current visual position
+                self.visual_positions.append(visual_pos)
+                self.gnss_positions.append(enu_positions[0])  # First frame in submap
         # Create and add submap.
         self.current_working_submap.set_reference_homography(H_w_submap)
         self.current_working_submap.add_all_poses(cam_to_world)
         self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         self.current_working_submap.set_conf_masks(conf) # TODO should make this work for point cloud conf as well
-        current_visual_pos = cam_to_world[-1, :3, 3]  # 最后一个位姿的平移部分
-        
-        # 处理GNSS数据
-        if gnss_measurements is not None and len(gnss_measurements) > 0:
-            # 转换最后一个GNSS测量
-            last_gnss = gnss_measurements[-1]
-            current_gnss = np.array(self.graph.gnss_processor.lla_to_enu(*last_gnss))
-            
-            # 如果是第一个有GNSS的帧，初始化
-            if self.last_gnss_pos is None:
-                self.last_visual_pos = current_visual_pos
-                self.last_gnss_pos = current_gnss
-                self.visual_positions.append(current_visual_pos)
-                self.gnss_positions.append(current_gnss)
-                print(f"Initialized GNSS alignment at frame {len(self.visual_positions)}")
-            else:
-                # 计算相对运动
-                visual_delta = current_visual_pos - self.last_visual_pos
-                gnss_delta = current_gnss - self.last_gnss_pos
-                
-                # 记录用于尺度估计
-                self.visual_positions.append(current_visual_pos)
-                self.gnss_positions.append(current_gnss)
-                
-                # 检查是否可以进行尺度对齐
-                if True:
-                    # 计算当前段的尺度因子
-                    visual_dist = np.linalg.norm(visual_delta)
-                    gnss_dist = np.linalg.norm(gnss_delta)
-                    print(f"Visual distance: {visual_dist:.4f}, GNSS distance: {gnss_dist:.4f}")
-                    if visual_dist > 0.01:
-                        scale_estimate = gnss_dist / visual_dist
-                        print(f"Scale estimate from frame {len(self.visual_positions)-1} to {len(self.visual_positions)}: {scale_estimate:.4f}")
-                        self.align_scale()
-                        # 如果有足够的估计点，计算全局尺度
-                        # if len(self.visual_positions) >= 3:
-                        #     self.align_scale()
-                        #     self.scale_aligned = True
-            
-            # 更新最后位置
-            self.last_visual_pos = current_visual_pos
-            self.last_gnss_pos = current_gnss
+
         # Add in loop closures if any were detected.
         for index, loop in enumerate(detected_loops):
             assert loop.query_submap_id == self.current_working_submap.get_id()
@@ -584,41 +564,11 @@ class Solver:
 
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
-
-            print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
-            print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
-
-            # print("relative_pose factor added", relative_pose)
-
-            # Visualize query and detected frames
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(loop.detected_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(loop.query_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
-
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
         self.map.add_submap(self.current_working_submap)
-        # 如果已经对齐尺度，应用到GNSS约束
-        if gnss_measurements is not None and len(gnss_measurements) > 0:
-                if True:
-                    # 创建缩放后的GNSS测量 - 但不是缩放位姿，而是调整GNSS噪声
-                    print(f"Applying scale factor {self.scale_factor:.4f} to GNSS constraints")
-                    self.graph.test_add_gnss(gnss_measurements, scale_factor=self.scale_factor)
-                else:
-                    # 仍然添加原始GNSS，但可能尺度不匹配
-                    self.graph.test_add_gnss(gnss_measurements)
-        # Add GNSS measurements if available
+        if len(self.visual_positions) >= 2 and not self.scale_aligned:
+            if self.align_scale():
+                self.apply_scale_to_poses(world_points)
+                self.add_gnss_constraints()
         # if gnss_measurements is not None and len(gnss_measurements) > 0:
         #     print(f"Adding {len(gnss_measurements)} GNSS measurements to graph")
         #     self.graph.add_gnss(gnss_measurements)
