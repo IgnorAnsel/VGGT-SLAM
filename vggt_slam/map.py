@@ -87,6 +87,18 @@ class GraphMap:
                     quaternion = R.from_matrix(rotation_matrix).as_quat() # x, y, z, w
                     output = np.array([float(frame_id), x, y, z, *quaternion])
                     f.write(" ".join(f"{v:.8f}" for v in output) + "\n")
+    def test_write_poses_to_file(self, file_name, scale):
+        with open(file_name, "w") as f:
+            for submap in self.ordered_submaps_by_key():
+                poses = submap.get_all_poses_world(ignore_loop_closure_frames=True)
+                frame_ids = submap.get_frame_ids()
+                assert len(poses) == len(frame_ids), "Number of provided poses and number of frame ids do not match"
+                for frame_id, pose in zip(frame_ids, poses):
+                    x, y, z = pose[0:3, 3] * scale
+                    rotation_matrix = pose[0:3, 0:3]
+                    quaternion = R.from_matrix(rotation_matrix).as_quat() # x, y, z, w
+                    output = np.array([float(frame_id), x, y, z, *quaternion])
+                    f.write(" ".join(f"{v:.8f}" for v in output) + "\n")
 
     def save_framewise_pointclouds(self, file_name):
         os.makedirs(file_name, exist_ok=True)
@@ -104,6 +116,22 @@ class GraphMap:
             pcd = submap.get_points_in_world_frame()
             pcd = pcd.reshape(-1, 3)
             pcd_all.append(pcd)
+            colors_all.append(submap.get_points_colors())
+        pcd_all = np.concatenate(pcd_all, axis=0)
+        colors_all = np.concatenate(colors_all, axis=0)
+        if colors_all.max() > 1.0:
+            colors_all = colors_all / 255.0
+        pcd_all = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pcd_all))
+        pcd_all.colors = o3d.utility.Vector3dVector(colors_all)
+        o3d.io.write_point_cloud(file_name, pcd_all)
+
+    def test_write_points_to_file(self, file_name, scale):
+        pcd_all = []
+        colors_all = []
+        for submap in self.ordered_submaps_by_key():
+            pcd = submap.get_points_in_world_frame()
+            pcd = pcd.reshape(-1, 3)
+            pcd_all.append(pcd * scale)
             colors_all.append(submap.get_points_colors())
         pcd_all = np.concatenate(pcd_all, axis=0)
         colors_all = np.concatenate(colors_all, axis=0)

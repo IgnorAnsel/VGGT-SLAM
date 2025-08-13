@@ -33,53 +33,84 @@ class PoseGraph:
         self.anchor_noise = noiseModel.Diagonal.Sigmas([1e-6] * 15)
         self.initialized_nodes = set()
         self.num_loop_closures = 0 # Just used for debugging and analysis
-    def scale_all_poses(self, scale_factor):
-        """Scale all pose positions by the given factor while maintaining SL(4) constraints"""
-        print(f"Scaling all poses by factor: {scale_factor}")
+        self.frame_nodes = {}
+    # def scale_all_poses(self, scale_factor):
+    #     """Scale all pose positions by the given factor while maintaining SL(4) constraints"""
+    #     print(f"Scaling all poses by factor: {scale_factor}")
+    #     # 创建一个新的Values对象来存储缩放后的位姿
+    #     new_values = Values()
         
-        # 创建一个新的Values对象来存储缩放后的位姿
-        new_values = Values()
-        
-        for key in self.initialized_nodes:
-            H = self.values.atSL4(key).matrix().copy()
+    #     for key in self.initialized_nodes:
+    #         H = self.values.atSL4(key).matrix().copy()
+
+    #         # 正确提取3D位置（考虑齐次坐标）
+    #         position = H[0:3, 3] / H[3, 3]
             
-            # 正确提取3D位置（考虑齐次坐标）
-            position = H[0:3, 3] / H[3, 3]
+    #         # 缩放位置
+    #         scaled_position = position * scale_factor
             
-            # 缩放位置
-            scaled_position = position * scale_factor
+    #         # 创建新的变换矩阵 - 保持齐次坐标的最后一行不变
+    #         H_new = H.copy()
+    #         H_new[0:3, 3] = scaled_position * H[3, 3]
             
-            # 创建新的变换矩阵 - 保持齐次坐标的最后一行不变
-            H_new = H.copy()
-            H_new[0:3, 3] = scaled_position * H[3, 3]
+    #         # 确保行列式为正的关键步骤
+    #         det = np.linalg.det(H_new)
+    #         if det < 0:
+    #             # 通过翻转整个矩阵来使行列式为正
+    #             # 这不会改变3D几何，只会改变方向（镜像）
+    #             H_new = -H_new
+    #             det = np.linalg.det(H_new)
+    #             print(f"Adjusted sign of pose {key} to make determinant positive")
             
-            # 确保行列式为正的关键步骤
-            det = np.linalg.det(H_new)
-            if det < 0:
-                # 通过翻转整个矩阵来使行列式为正
-                # 这不会改变3D几何，只会改变方向（镜像）
-                H_new = -H_new
-                det = np.linalg.det(H_new)
-                print(f"Adjusted sign of pose {key} to make determinant positive")
+    #         # 归一化使行列式为1（SL(4)要求）
+    #         H_new = H_new / (np.abs(det) ** (1/4))
             
-            # 归一化使行列式为1（SL(4)要求）
-            H_new = H_new / (np.abs(det) ** (1/4))
-            
-            # 验证行列式是否为正
-            final_det = np.linalg.det(H_new)
-            if final_det <= 0:
-                print(f"Error: Determinant still not positive for pose {key}: {final_det}")
-                continue
+    #         # 验证行列式是否为正
+    #         final_det = np.linalg.det(H_new)
+    #         if final_det <= 0:
+    #             print(f"Error: Determinant still not positive for pose {key}: {final_det}")
+    #             continue
                 
-            new_values.insert(key, SL4(H_new))
+    #         new_values.insert(key, SL4(H_new))
         
-        # 替换values并重新优化
-        self.values = new_values
-        self.ptimize()
+    #     # 替换values并重新优化
+    #     self.values = new_values
+    #     self.ptimize()
+    def add_gnss_to_submap(self, submap_id, enu, scale_factor=1.0):
+        """
+        为子图添加GNSS约束（使用子图的参考帧位置）
+        
+        Args:
+            submap_id: 子图ID
+            enu: ENU坐标 (east, north, up)
+            scale_factor: GNSS坐标的缩放因子
+        """
+        print("use scale factor: ", scale_factor)
+        key = X(submap_id)
+        if key not in self.initialized_nodes:
+            print(f"Warning: Submap {submap_id} not initialized, cannot add GNSS prior")
+            return
+        #scale_factor = 200.0
+        # 应用缩放因子
+        enu_scaled = enu / scale_factor
+        
+        # 创建GNSS位姿
+        H_gnss = np.eye(4)
+        H_gnss[0:3, 3] = enu_scaled
+        self.gnss_processor.add_enu2history(enu_scaled)
 
-
-
-
+        noise_vector = np.ones(15) * 1e6
+        horizontal_noise = 100.0 / scale_factor  # 水平方向噪声（米）
+        vertical_noise = 100.0 / scale_factor    # 垂直方向噪声（米）
+        noise_vector[-3] = horizontal_noise  # East
+        noise_vector[-2] = horizontal_noise  # North
+        noise_vector[-1] = vertical_noise    # Up
+        
+        gnss_noise = noiseModel.Diagonal.Sigmas(noise_vector)
+        
+        # 添加先验因子
+        self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
+        print(f"Added GNSS prior factor for submap {submap_id}")
     def visualize_gnss_constraints(self):
         """Plot GNSS measurements vs optimized positions"""
         positions = []
@@ -101,7 +132,8 @@ class PoseGraph:
             gnss_positions = np.array(self.gnss_processor.enu_history)
             plt.scatter(gnss_positions[:, 0], gnss_positions[:, 1], 
                     c='r', marker='x', s=100, label='GNSS Measurements')
-        
+        print(len(positions))
+        print(len(self.gnss_processor.enu_history))
         plt.xlabel('East (m)')
         plt.ylabel('North (m)')
         plt.title('Trajectory with GNSS Constraints')
@@ -121,27 +153,22 @@ class PoseGraph:
         for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
             # 转换为ENU坐标
             enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
-            scale_factor = 246.0
+            scale_factor = 200.0
             enu_scaled = enu / scale_factor
-            print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
+            # print(f"Frame {frame_idx} GNSS ENU (scaled): {enu_scaled} (scale={scale_factor:.4f})")
             self.gnss_processor.add_enu2history(enu_scaled)
-            # 创建SL4矩阵
             H_gnss = np.eye(4)
             H_gnss[0:3, 3] = enu_scaled  # 设置缩放后的平移部分
             
-            noise_vector = np.ones(15) * 1e6  # 高噪声表示不约束
-            # 根据GNSS设备精度调整这些值
-            horizontal_noise = 0.1  # 水平方向噪声（米）
-            vertical_noise = 0.1    # 垂直方向噪声（米）
-            
-            # 重要：根据尺度因子调整噪声
-            # 如果尺度因子很大，GNSS噪声在视觉尺度下会变小
+            noise_vector = np.ones(15) * 1e6 
+            horizontal_noise = 100  # 水平方向噪声（米）
+            vertical_noise = 100    # 垂直方向噪声（米）
             horizontal_noise /= scale_factor
             vertical_noise /= scale_factor
             
-            noise_vector[-3] = horizontal_noise  # x (East)
-            noise_vector[-2] = horizontal_noise  # y (North)
-            noise_vector[-1] = vertical_noise    # z (Up)
+            noise_vector[-3] = horizontal_noise  # (East)
+            noise_vector[-2] = horizontal_noise  # (North)
+            noise_vector[-1] = vertical_noise    # (Up)
             
             gnss_noise = noiseModel.Diagonal.Sigmas(noise_vector)
             
@@ -150,36 +177,6 @@ class PoseGraph:
             if key in self.initialized_nodes:
                 self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
                 print(f"Added GNSS prior factor for frame {frame_idx}")
-            else:
-                print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
-
-
-    def add_gnss(self, gnss_measurements):
-        """
-        Add GNSS measurements as prior factors to the pose graph.
-        
-        Args:
-            gnss_measurements: List of (lat, lon, alt) tuples for each frame
-        """
-        for frame_idx, (lat, lon, alt) in enumerate(gnss_measurements):
-            # Convert LLA to ENU (East, North, Up) coordinates
-            enu = self.gnss_processor.lla_to_enu(lat, lon, alt)
-            # print(f"Frame {frame_idx} GNSS ENU: {enu}")
-            H_gnss = np.eye(4)
-            H_gnss[0:3, 3] = enu 
-            horizontal_noise = 1.0 
-            vertical_noise = 1.0  
-            
-            noise_vector = np.ones(15) * 1e6 
-            noise_vector[-3] = horizontal_noise  # x (East)
-            noise_vector[-2] = horizontal_noise  # y (North)
-            noise_vector[-1] = vertical_noise    # z (Up)
-            gnss_noise = noiseModel.Diagonal.Sigmas(noise_vector)
-            
-            key = X(frame_idx)
-            if key in self.initialized_nodes:
-                self.graph.add(PriorFactorSL4(key, SL4(H_gnss), gnss_noise))
-                # print(f"Added GNSS prior factor for frame {frame_idx}")
             else:
                 print(f"Warning: Frame {frame_idx} not initialized yet, cannot add GNSS prior")
     def add_homography(self, key, global_h):

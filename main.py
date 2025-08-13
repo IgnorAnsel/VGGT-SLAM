@@ -18,7 +18,7 @@ from vggt.models.vggt import VGGT
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 
 
-parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
+parser.add_argument("--image_folder", type=str, default="/home/ansel/works/vggt-slam/VGGT-SLAM/temp_frames_120", help="Path to folder containing images")
 parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
 parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
 parser.add_argument("--log_results", action="store_true", help="save txt file with results")
@@ -90,7 +90,7 @@ def main():
     image_names_subset = []
     data = []
     total_images = len(image_names)
-    half_point = total_images // 2
+    half_point = total_images // 1
     for i, image_name in enumerate(tqdm(image_names)):
         if use_optical_flow_downsample:
             img = cv2.imread(image_name)

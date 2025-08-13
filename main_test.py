@@ -19,8 +19,8 @@ from enu import process_data
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 
 
-parser.add_argument("--video_path", type=str, default="/home/ansel/works/datasets/DJI_20250725182253_0003_V.mp4", help="Path to video file")
-parser.add_argument("--gnss_path", type=str, default="/home/ansel/works/datasets/DJI_20250725182253_0003_V.SRT", help="Path to GNSS file")
+parser.add_argument("--video_path", type=str, default="/home/ansel/works/datasets/DJI_20250725181205_0001_V.mp4", help="Path to video file")
+parser.add_argument("--gnss_path", type=str, default="/home/ansel/works/datasets/DJI_20250725181205_0001_V.SRT", help="Path to GNSS file")
 parser.add_argument("--image_folder", type=str, default="/home/ansel/works/vggt-slam/VGGT-SLAM/temp_frames", help="Path to folder containing images")
 parser.add_argument("--downsample_factor_video", type=int, default="2", help="Factor to frame extracting")
 parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
@@ -156,10 +156,10 @@ def main():
         solver.update_all_submap_vis()
 
     if args.log_results:
-        solver.map.write_poses_to_file(args.log_path)
+        solver.map.test_write_poses_to_file(args.log_path, solver.scale_factor_mean)
 
         # Log the full point cloud as one file, used for visualization.
-        solver.map.write_points_to_file(args.log_path.replace(".txt", "_points.pcd"))
+        solver.map.test_write_points_to_file(args.log_path.replace(".txt", "_points.pcd"), solver.scale_factor_mean)
 
         if not args.skip_dense_log:
             # Log the dense point cloud for each submap.

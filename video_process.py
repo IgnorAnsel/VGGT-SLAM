@@ -76,7 +76,7 @@ class VideoProcess:
             return frame
         
         gnss = self.gnss_data[frame_num]
-
+        yaw = gnss["yaw"] % 360
         # 构造 EXIF 数据
         exif_dict = {
             "GPS": {
@@ -86,7 +86,7 @@ class VideoProcess:
                 piexif.GPSIFD.GPSLongitude: self._convert_to_degrees(abs(gnss["longitude"])),
                 piexif.GPSIFD.GPSAltitudeRef: 0 if gnss["abs_alt"] >= 0 else 1,
                 piexif.GPSIFD.GPSAltitude: (int(abs(gnss["abs_alt"]) * 1000), 1000),
-                piexif.GPSIFD.GPSImgDirection: (int(gnss["yaw"] * 100), 100),
+                piexif.GPSIFD.GPSImgDirection: (int(yaw * 100), 100),
                 piexif.GPSIFD.GPSImgDirectionRef: "T",  # 真北方向
             },
             "0th": {},  # 主图像标签（必须存在）
@@ -109,7 +109,7 @@ class VideoProcess:
 
         return img_data
 
-    def extract_frames(self, frame_interval, output_dir="./temp_frames"):
+    def extract_frames(self, frame_interval, output_dir="./temp_frames_120"):
         """
         抽帧并注入 GNSS 数据到 EXIF
         :param frame_interval: 每秒抽取的帧数（如 5 表示每秒抽 5 帧）
@@ -170,11 +170,14 @@ class VideoProcess:
                     "altitude": gps.get(piexif.GPSIFD.GPSAltitude, (0, 1))[0] / gps.get(piexif.GPSIFD.GPSAltitude, (0, 1))[1],
                     "yaw": gps.get(piexif.GPSIFD.GPSImgDirection, (0, 1))[0] / gps.get(piexif.GPSIFD.GPSImgDirection, (0, 1))[1],
                 }
-
+            latitude = float(gps_info.get("latitude"))
+            longitude = float(gps_info.get("longitude"))
+            truncated_lat = float(f"{latitude:.5f}")  # 保留5位小数，因为精度是m，但数据精度却是6位
+            truncated_lon = float(f"{longitude:.5f}")
             # pprint(gps_info)
             return (
-                float(gps_info.get("latitude")),
-                float(gps_info.get("longitude")),
+                truncated_lat,
+                truncated_lon,
                 float(gps_info.get("altitude"))
             )
         

@@ -138,7 +138,7 @@ class Solver:
         self.init_conf_threshold = init_conf_threshold
         self.use_point_map = use_point_map
         self.gradio_mode = gradio_mode
-
+        
         if self.gradio_mode:
             self.viewer = TrimeshViewer()
         else:
@@ -163,7 +163,7 @@ class Solver:
         self.prior_pcd = None
         self.prior_conf = None
 
-
+        self.scale_factor_mean = 1.0
         self.scale_factor = 1.0
         self.scale_aligned = False
         self.visual_positions = []  # 存储视觉位置历史
@@ -174,26 +174,29 @@ class Solver:
         print("Starting viser server...")
     def align_scale(self):
         """计算尺度因子但不直接缩放位姿 - 通过GNSS约束引导优化"""
-        if len(self.visual_positions) < 2:
-            print("Warning: Not enough points for scale alignment")
-            return False
+        # if len(self.visual_positions) < 1:
+        #     print("Warning: Not enough points for scale alignment")
+        #     return False
         
         # 计算从起点到各点的距离比例
         scale_factors = []
         for i in range(1, len(self.visual_positions)):
-            visual_delta = self.visual_positions[i] - self.visual_positions[0]
-            gnss_delta = self.gnss_positions[i] - self.gnss_positions[0]
+            visual_delta = self.visual_positions[i] - self.visual_positions[i-1]
+            gnss_delta = self.gnss_positions[i] - self.gnss_positions[i-1]
             
             visual_dist = np.linalg.norm(visual_delta)
             gnss_dist = np.linalg.norm(gnss_delta)
             
-            if visual_dist > 0.01:  # 避免除以小值
+            if visual_dist > 0.05:  # 避免除以小值
                 scale_factors.append(gnss_dist / visual_dist)
         
         if scale_factors:
-            self.scale_factor = np.median(scale_factors)
-            print(f"Scale alignment: visual scale factor = {self.scale_factor:.4f}")
-            self.scale_aligned = True            
+            self.scale_factor_midian = np.median(scale_factors)
+            self.scale_factor_mean = np.mean(scale_factors)
+            self.scale_factor = self.scale_factor_mean
+            print(f"Scale alignment: midian scale factor = {self.scale_factor:.4f}")
+            print(f"Scale alignment: mean scale factor = {self.scale_factor_mean:.4f}")
+            self.scale_aligned = True
             print("Scale alignment complete. GNSS constraints will guide the optimizer.")
             return True
         else:
@@ -421,6 +424,7 @@ class Solver:
                 "extrinsic": (S, 3, 4),
                 "intrinsic": (S, 3, 3),
             }
+            gnss_measurements (list): 
         """
         # Unpack prediction dict
         images = pred_dict["images"]  # (S, 3, H, W)
@@ -522,14 +526,11 @@ class Solver:
         self.current_working_submap.add_all_poses(cam_to_world)
         self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         self.current_working_submap.set_conf_masks(conf) # TODO should make this work for point cloud conf as well
-        current_visual_pos = cam_to_world[-1, :3, 3]  # 最后一个位姿的平移部分
-        
+        current_visual_pos = cam_to_world[-1, :3, 3]  # 第一个位姿的平移部分
         # 处理GNSS数据
         if gnss_measurements is not None and len(gnss_measurements) > 0:
-            # 转换最后一个GNSS测量
             last_gnss = gnss_measurements[-1]
             current_gnss = np.array(self.graph.gnss_processor.lla_to_enu(*last_gnss))
-            
             # 如果是第一个有GNSS的帧，初始化
             if self.last_gnss_pos is None:
                 self.last_visual_pos = current_visual_pos
@@ -541,26 +542,21 @@ class Solver:
                 # 计算相对运动
                 visual_delta = current_visual_pos - self.last_visual_pos
                 gnss_delta = current_gnss - self.last_gnss_pos
-                
-                # 记录用于尺度估计
                 self.visual_positions.append(current_visual_pos)
                 self.gnss_positions.append(current_gnss)
-                
-                # 检查是否可以进行尺度对齐
-                if not self.scale_aligned:
+                if True:
                     # 计算当前段的尺度因子
                     visual_dist = np.linalg.norm(visual_delta)
                     gnss_dist = np.linalg.norm(gnss_delta)
                     print(f"Visual distance: {visual_dist:.4f}, GNSS distance: {gnss_dist:.4f}")
-                    if visual_dist > 0.01:
+                    if visual_dist > 0.05:
                         scale_estimate = gnss_dist / visual_dist
                         print(f"Scale estimate from frame {len(self.visual_positions)-1} to {len(self.visual_positions)}: {scale_estimate:.4f}")
-                        
+                        self.scale_factor = scale_estimate
                         # 如果有足够的估计点，计算全局尺度
-                        if len(self.visual_positions) >= 3:
+                        if len(self.visual_positions) >= 1:
                             self.align_scale()
                             self.scale_aligned = True
-            
             # 更新最后位置
             self.last_visual_pos = current_visual_pos
             self.last_gnss_pos = current_gnss
@@ -587,37 +583,26 @@ class Solver:
 
             print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
             print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
-
-            # print("relative_pose factor added", relative_pose)
-
-            # Visualize query and detected frames
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(loop.detected_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(loop.query_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
-
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
         self.map.add_submap(self.current_working_submap)
         # 如果已经对齐尺度，应用到GNSS约束
         if gnss_measurements is not None and len(gnss_measurements) > 0:
-                if self.scale_aligned:
-                    # 创建缩放后的GNSS测量 - 但不是缩放位姿，而是调整GNSS噪声
-                    print(f"Applying scale factor {self.scale_factor:.4f} to GNSS constraints")
-                    self.graph.test_add_gnss(gnss_measurements, scale_factor=self.scale_factor)
-                else:
-                    # 仍然添加原始GNSS，但可能尺度不匹配
-                    self.graph.test_add_gnss(gnss_measurements)
+                # 获取当前子图的参考帧（通常是第一帧）
+                ref_frame_idx = -1
+                
+                # 确保有参考帧的GNSS数据
+                if ref_frame_idx < len(gnss_measurements):
+                    lat, lon, alt = gnss_measurements[ref_frame_idx]
+                    enu = self.graph.gnss_processor.lla_to_enu(lat, lon, alt)
+                    
+                    # 获取当前子图ID
+                    submap_id = self.current_working_submap.get_id()
+                    
+                    # 添加GNSS约束
+                    self.graph.add_gnss_to_submap(
+                        submap_id, 
+                        enu, 
+                        scale_factor=self.scale_factor if self.scale_aligned else 200.0
+                    )
         # Add GNSS measurements if available
         # if gnss_measurements is not None and len(gnss_measurements) > 0:
         #     print(f"Adding {len(gnss_measurements)} GNSS measurements to graph")
