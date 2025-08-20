@@ -17,65 +17,12 @@ class PoseGraph:
         self.gnss_processor = GNSSprocesser() # 加入gnss处理
         self.graph = NonlinearFactorGraph()
         self.values = Values()
-        # n = 0.05*np.ones(15, dtype=float)
-        # n[3] = 1e-6
-        # n[7] = 1e-6
-        # n[11] = 1e-6
-
-        # n[1] = 1e-6
-        # n[2] = 1e-6
-        # n[4] = 1e-6
-        # n[6] = 1e-6
-        # n[8] = 1e-6
-        # n[9] = 1e-6
-        # n[10] = 1e-6
         self.relative_noise = noiseModel.Diagonal.Sigmas(0.05*np.ones(15, dtype=float))
         self.anchor_noise = noiseModel.Diagonal.Sigmas([1e-6] * 15)
         self.initialized_nodes = set()
         self.num_loop_closures = 0 # Just used for debugging and analysis
         self.frame_nodes = {}
-    # def scale_all_poses(self, scale_factor):
-    #     """Scale all pose positions by the given factor while maintaining SL(4) constraints"""
-    #     print(f"Scaling all poses by factor: {scale_factor}")
-    #     # 创建一个新的Values对象来存储缩放后的位姿
-    #     new_values = Values()
-        
-    #     for key in self.initialized_nodes:
-    #         H = self.values.atSL4(key).matrix().copy()
 
-    #         # 正确提取3D位置（考虑齐次坐标）
-    #         position = H[0:3, 3] / H[3, 3]
-            
-    #         # 缩放位置
-    #         scaled_position = position * scale_factor
-            
-    #         # 创建新的变换矩阵 - 保持齐次坐标的最后一行不变
-    #         H_new = H.copy()
-    #         H_new[0:3, 3] = scaled_position * H[3, 3]
-            
-    #         # 确保行列式为正的关键步骤
-    #         det = np.linalg.det(H_new)
-    #         if det < 0:
-    #             # 通过翻转整个矩阵来使行列式为正
-    #             # 这不会改变3D几何，只会改变方向（镜像）
-    #             H_new = -H_new
-    #             det = np.linalg.det(H_new)
-    #             print(f"Adjusted sign of pose {key} to make determinant positive")
-            
-    #         # 归一化使行列式为1（SL(4)要求）
-    #         H_new = H_new / (np.abs(det) ** (1/4))
-            
-    #         # 验证行列式是否为正
-    #         final_det = np.linalg.det(H_new)
-    #         if final_det <= 0:
-    #             print(f"Error: Determinant still not positive for pose {key}: {final_det}")
-    #             continue
-                
-    #         new_values.insert(key, SL4(H_new))
-        
-    #     # 替换values并重新优化
-    #     self.values = new_values
-    #     self.ptimize()
     def add_gnss_to_submap(self, submap_id, enu, scale_factor=1.0):
         """
         为子图添加GNSS约束（使用子图的参考帧位置）
@@ -90,7 +37,6 @@ class PoseGraph:
         if key not in self.initialized_nodes:
             print(f"Warning: Submap {submap_id} not initialized, cannot add GNSS prior")
             return
-        #scale_factor = 200.0
         # 应用缩放因子
         enu_scaled = enu / scale_factor
         
@@ -100,7 +46,7 @@ class PoseGraph:
         self.gnss_processor.add_enu2history(enu_scaled)
 
         noise_vector = np.ones(15) * 1e6
-        horizontal_noise = 100.0 / scale_factor  # 水平方向噪声（米）
+        horizontal_noise = 80.0 / scale_factor  # 水平方向噪声（米）
         vertical_noise = 100.0 / scale_factor    # 垂直方向噪声（米）
         noise_vector[-3] = horizontal_noise  # East
         noise_vector[-2] = horizontal_noise  # North

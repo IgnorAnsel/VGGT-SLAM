@@ -26,6 +26,7 @@ parser.add_argument("--skip_dense_log", action="store_true", help="by default, l
 parser.add_argument("--log_path", type=str, default="poses.txt", help="Path to save the log file")
 parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of SL(4)")
 parser.add_argument("--plot_focal_lengths", action="store_true", help="Plot focal lengths for the submaps")
+# 较小的值增加计算频率，较大的值提升局部一致性。
 parser.add_argument("--submap_size", type=int, default=3, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
 parser.add_argument("--downsample_factor", type=int, default=2, help="Factor to reduce image size by 1/N")

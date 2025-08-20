@@ -18,7 +18,7 @@ from vggt_slam.map import GraphMap
 from vggt_slam.submap import Submap
 from vggt_slam.h_solve import ransac_projective
 from vggt_slam.gradio_viewer import TrimeshViewer
-
+from KalmanFilter import KalmanFilter
 def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
     """
     Color a point cloud based on per-point confidence values.
@@ -152,7 +152,7 @@ class Solver:
         else:
             from vggt_slam.graph import PoseGraph
         self.graph = PoseGraph()
-
+        self.kf = KalmanFilter(dim_state=6, dim_measurement=3)
         self.image_retrieval = ImageRetrieval()
         self.current_working_submap = None
 
@@ -181,14 +181,16 @@ class Solver:
         # 计算从起点到各点的距离比例
         scale_factors = []
         for i in range(1, len(self.visual_positions)):
+            visual_delta_xy = self.visual_positions[i][:2] - self.visual_positions[i-1][:2]
+            gnss_delta_xy = self.gnss_positions[i][:2] - self.gnss_positions[i-1][:2]
             visual_delta = self.visual_positions[i] - self.visual_positions[i-1]
             gnss_delta = self.gnss_positions[i] - self.gnss_positions[i-1]
-            
             visual_dist = np.linalg.norm(visual_delta)
             gnss_dist = np.linalg.norm(gnss_delta)
             
             if visual_dist > 0.05:  # 避免除以小值
-                scale_factors.append(gnss_dist / visual_dist)
+                factor = gnss_dist / visual_dist
+                scale_factors.append(factor)
         
         if scale_factors:
             self.scale_factor_midian = np.median(scale_factors)
@@ -530,7 +532,8 @@ class Solver:
         # 处理GNSS数据
         if gnss_measurements is not None and len(gnss_measurements) > 0:
             last_gnss = gnss_measurements[-1]
-            current_gnss = np.array(self.graph.gnss_processor.lla_to_enu(*last_gnss))
+            lat, lon, alt = last_gnss
+            current_gnss = np.array(self.graph.gnss_processor.lla_to_enu(lat, lon, alt))
             # 如果是第一个有GNSS的帧，初始化
             if self.last_gnss_pos is None:
                 self.last_visual_pos = current_visual_pos
@@ -539,6 +542,8 @@ class Solver:
                 self.gnss_positions.append(current_gnss)
                 print(f"Initialized GNSS alignment at frame {len(self.visual_positions)}")
             else:
+                visual_delta_xy = current_visual_pos[:2] - self.last_visual_pos[:2]
+                gnss_delta_xy = current_gnss[:2] - self.last_gnss_pos[:2]
                 # 计算相对运动
                 visual_delta = current_visual_pos - self.last_visual_pos
                 gnss_delta = current_gnss - self.last_gnss_pos
@@ -554,9 +559,9 @@ class Solver:
                         print(f"Scale estimate from frame {len(self.visual_positions)-1} to {len(self.visual_positions)}: {scale_estimate:.4f}")
                         self.scale_factor = scale_estimate
                         # 如果有足够的估计点，计算全局尺度
-                        if len(self.visual_positions) >= 1:
-                            self.align_scale()
-                            self.scale_aligned = True
+                        #if len(self.visual_positions) >= 1:
+                        self.align_scale()
+                        self.scale_aligned = True
             # 更新最后位置
             self.last_visual_pos = current_visual_pos
             self.last_gnss_pos = current_gnss
@@ -577,12 +582,11 @@ class Solver:
                 points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
                 H_relative_lc = ransac_projective(points_world_query, points_world_detected)
 
-
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
 
-            print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
-            print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
+            # print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
+            # print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
         self.map.add_submap(self.current_working_submap)
         # 如果已经对齐尺度，应用到GNSS约束
         if gnss_measurements is not None and len(gnss_measurements) > 0:
@@ -601,12 +605,8 @@ class Solver:
                     self.graph.add_gnss_to_submap(
                         submap_id, 
                         enu, 
-                        scale_factor=self.scale_factor if self.scale_aligned else 200.0
+                        scale_factor=self.scale_factor if self.scale_aligned else 180
                     )
-        # Add GNSS measurements if available
-        # if gnss_measurements is not None and len(gnss_measurements) > 0:
-        #     print(f"Adding {len(gnss_measurements)} GNSS measurements to graph")
-        #     self.graph.add_gnss(gnss_measurements)
 
     def sample_pixel_coordinates(self, H, W, n):
         # Sample n random row indices (y-coordinates)
@@ -657,9 +657,39 @@ class Solver:
                 predictions = model(images)
 
         extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+
+        # FIXED_FOCAL = 300       
+        # new_intrinsic = intrinsic.clone()
+        
+        # # original_cx = intrinsic[..., 0, 2]
+        # # original_cy = intrinsic[..., 1, 2]
+        
+        # new_intrinsic[..., 0, 0] = FIXED_FOCAL  # fx
+        # new_intrinsic[..., 1, 1] = FIXED_FOCAL  # fy
+        
+        # print("\n============ 焦距修正 ============")
+        # print(f"原始形状: {intrinsic.shape}")
+        # print(f"首帧原始值:\n{intrinsic[0,0].cpu().numpy()}")
+        # print(f"首帧修正后:\n{new_intrinsic[0,0].cpu().numpy()}")
+        # print("================================")
         predictions["extrinsic"] = extrinsic
         predictions["intrinsic"] = intrinsic
         predictions["detected_loops"] = detected_loops
+
+        # intrinsic = new_intrinsic[0]  # 形状变为[num_frames, 3, 3]
+        # print("\n============ 焦距输出 ============")
+        # for frame_idx in range(intrinsic.shape[0]):  # 遍历所有帧
+        #     frame_matrix = intrinsic[frame_idx]
+        #     fx = frame_matrix[0, 0].item()
+        #     fy = frame_matrix[1, 1].item()
+        #     cx = frame_matrix[0, 2].item()
+        #     cy = frame_matrix[1, 2].item()
+            
+        #     print(f"帧 {frame_idx+1}/{intrinsic.shape[0]}:")
+        #     print(f"  fx = {fx:.3f}")
+        #     print(f"  fy = {fy:.3f}")
+        #     print(f"  主点 (cx, cy) = ({cx:.1f}, {cy:.1f})")
+        # print("================================\n")
         # print("extrinsic_after", extrinsic)
         for key in predictions.keys():
             if isinstance(predictions[key], torch.Tensor):
