@@ -1,6 +1,7 @@
 import open3d as o3d
 import numpy as np
 import torch
+import turboreg_gpu
 from scipy.linalg import null_space
 
 def to_homogeneous(X):
@@ -129,6 +130,50 @@ def scale(X):
 
     return T, X_transformed
 
+# threshold = 0.01, max_iter = 300, sample_size = 5
+def ransac_projective_improved(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # 转换数据到GPU
+    X1 = torch.tensor(X1_np, dtype=torch.float32, device=device)
+    X2 = torch.tensor(X2_np, dtype=torch.float32, device=device)
+    N = X1.shape[0]
+    
+    best_inlier_count = -1
+    best_H = None
+    
+    for i in range(max_iter):
+        # 随机采样
+        indices = torch.randperm(N, device=device)[:sample_size]
+        X1_sample = X1[indices]
+        X2_sample = X2[indices]
+        
+        # 估计单应性矩阵
+        try:
+            H = estimate_3D_homography(
+                X1_sample.cpu().numpy(), 
+                X2_sample.cpu().numpy()
+            )
+            
+            # 应用变换并计算误差
+            X2_pred = apply_homography(H, X1.cpu().numpy())
+            errors = np.linalg.norm(X2_pred - X2.cpu().numpy(), axis=1)
+            
+            # 统计内点
+            inlier_mask = errors < threshold
+            inlier_count = np.sum(inlier_mask)
+            
+            # 更新最佳变换
+            if inlier_count > best_inlier_count:
+                best_inlier_count = inlier_count
+                best_H = H
+                
+        except Exception as e:
+            # 处理估计失败的情况
+            print(f"Iteration {i} failed: {e}")
+            continue
+    
+    return best_H
 def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -148,7 +193,7 @@ def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5)
     H_ests = estimate_3D_homography(X1_samples.cpu().numpy(), X2_samples.cpu().numpy())
 
     # Apply homographies to all points.
-    X2_preds = apply_homography_batch(H_ests, X1)
+    X2_preds =  apply_homography_batch(H_ests, X1)
 
     # Compute Euclidean error.
     errors = torch.norm(X2_preds - X2[None, :, :], dim=2)
@@ -162,3 +207,82 @@ def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5)
     best_H = H_ests[best_idx].cpu().numpy()
 
     return best_H
+def turbo_reg(X1_np, X2_np):
+    kpts_src = torch.from_numpy(X1_np)
+    kpts_dst = torch.from_numpy(X2_np)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    kpts_src = kpts_src.to(device).float()
+    kpts_dst = kpts_dst.to(device).float()
+    # Initialize TurboReg with specific parameters:
+    reger = turboreg_gpu.TurboRegGPU(
+        6000,      # max_N: Maximum number of correspondences
+        0.012,     # tau_length_consis: \tau (consistency threshold for feature length/distance)
+        2000,      # num_pivot: Number of pivot points, K_1
+        0.15,      # radiu_nms: Radius for avoiding the instability of the solution
+        0.1,       # tau_inlier: Threshold for inlier points. NOTE: just for post-refinement (REF@PointDSC/SC2PCR/MAC)
+        "IN"       # eval_metric: MetricType (e.g., "IN" for Inlier Number, or "MAE" / "MSE")
+    )
+
+    # Run registration
+    trans = reger.run_reg(kpts_src, kpts_dst).numpy()
+    return trans
+def icp(X1_np, X2_np, threshold=0.01, max_iter=300, tolerance=1e-6, batch_size=16):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Convert to torch tensors on GPU or CPU
+    X1 = torch.tensor(X1_np, dtype=torch.float32, device=device)
+    X2 = torch.tensor(X2_np, dtype=torch.float32, device=device)
+    
+    # Initialize
+    prev_error = float('inf')
+    
+    # Iterative ICP loop
+    for iter in range(max_iter):
+        all_distances = []  # 用于存储所有批次的距离矩阵
+
+        # Step 1: Find closest points in X2 for each point in X1, using batch processing
+        num_points = X1.shape[0]
+        num_batches = (num_points + batch_size - 1) // batch_size  # 计算总共的批次数量
+
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, num_points)
+            
+            X1_batch = X1[start_idx:end_idx]
+            X2_batch = X2
+
+            distances_batch = torch.cdist(X1_batch, X2_batch)
+            all_distances.append(distances_batch)
+
+        distances = torch.cat(all_distances, dim=0)
+
+
+        closest_indices = torch.argmin(distances, dim=1)  
+        X2_closest = X2[closest_indices] 
+
+        centroid_X1 = X1.mean(dim=0)
+        centroid_X2 = X2_closest.mean(dim=0)
+
+        X1_centered = X1 - centroid_X1
+        X2_centered = X2_closest - centroid_X2
+
+        H = torch.matmul(X1_centered.t(), X2_centered)
+
+        U, _, V = torch.svd(H)
+
+        R = torch.matmul(V, U.t())
+
+        t = centroid_X2 - torch.matmul(R, centroid_X1)
+
+        X1_transformed = torch.matmul(X1, R.t()) + t
+
+        error = torch.norm(X1_transformed - X2_closest, p=2)
+
+        if abs(prev_error - error) < tolerance:
+            print(f"ICP converged at iteration {iter}")
+            break
+        prev_error = error
+
+        torch.cuda.empty_cache()
+
+    return R, t

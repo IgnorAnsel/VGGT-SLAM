@@ -4,10 +4,11 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from gtsam import Pose3, Rot3, Point3, NonlinearFactorGraph, Values, noiseModel, PriorFactorPose3
 from gtsam.symbol_shorthand import X
-
+from gnss_processer import GNSSprocesser
 class PoseGraph:
     def __init__(self):
         """Initialize a factor graph for Pose3 nodes with BetweenFactors."""
+        self.gnss_processor = GNSSprocesser() # 加入gnss处理
         self.graph = NonlinearFactorGraph()
         self.values = Values()
         self.relative_noise = noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]))

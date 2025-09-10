@@ -16,30 +16,10 @@ from vggt_slam.loop_closure import ImageRetrieval
 from vggt_slam.frame_overlap import FrameTracker
 from vggt_slam.map import GraphMap
 from vggt_slam.submap import Submap
-from vggt_slam.h_solve import ransac_projective
+from vggt_slam.h_solve import ransac_projective, ransac_projective_improved, apply_homography
 from vggt_slam.gradio_viewer import TrimeshViewer
 from KalmanFilter import KalmanFilter
-def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
-    """
-    Color a point cloud based on per-point confidence values.
-    
-    Parameters:
-        pcd (o3d.geometry.PointCloud): The point cloud.
-        confidence (np.ndarray): Confidence values, shape (N,).
-        cmap (str): Matplotlib colormap name.
-    """
-    assert len(confidence) == len(pcd.points), "Confidence length must match number of points"
-
-    # Normalize confidence to [0, 1]
-    confidence_normalized = (confidence - np.min(confidence)) / (np.ptp(confidence) + 1e-8)
-    
-    # Map to colors using matplotlib colormap
-    colormap = plt.get_cmap(cmap)
-    colors = colormap(confidence_normalized)[:, :3]  # Drop alpha channel
-
-    # Assign to point cloud
-    pcd.colors = o3d.utility.Vector3dVector(colors)
-    return pcd
+from pcltest5 import move, move2
 
 class Viewer:
     def __init__(self, port: int = 8080):
@@ -196,7 +176,7 @@ class Solver:
             self.scale_factor_midian = np.median(scale_factors)
             self.scale_factor_mean = np.mean(scale_factors)
             self.scale_factor = self.scale_factor_mean
-            print(f"Scale alignment: midian scale factor = {self.scale_factor:.4f}")
+            print(f"Scale alignment: midian scale factor = {self.scale_factor_midian:.4f}")
             print(f"Scale alignment: mean scale factor = {self.scale_factor_mean:.4f}")
             self.scale_aligned = True
             print("Scale alignment complete. GNSS constraints will guide the optimizer.")
@@ -304,12 +284,14 @@ class Solver:
         else:
             prior_pcd_num = self.map.get_largest_key()
             prior_submap = self.map.get_submap(prior_pcd_num)
-
+            # print(world_points)
             current_pts = world_points[0,...].reshape(-1, 3)
         
             # TODO conf should be using the threshold in its own submap
-            good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
-            
+            # good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
+            prior_thr   = prior_submap.get_conf_threshold()
+            curr_thr    = prior_submap.get_conf_threshold()   # 如果当前子图也有自己的阈值，改用它
+            good_mask = (self.prior_conf.reshape(-1) > prior_thr) & (conf[0,:].reshape(-1) > curr_thr)
             if self.use_sim3:
                 # Note we still use H and not T in variable names so we can share code with the Sim3 case, 
                 # and SIM3 and SE3 are also subsets of the SL4 group
@@ -329,26 +311,58 @@ class Solver:
                 world_points *= scale_factor
                 cam_to_world[:, 0:3, 3] *= scale_factor
             else:
-                H_relative = ransac_projective(current_pts[good_mask], self.prior_pcd[good_mask])
-            
+                H_relative = ransac_projective(current_pts, self.prior_pcd)
+                if prior_pcd_num >= 1:
+                    H_relative = ransac_projective(current_pts, self.prior_pcd)
+                    prev_pcd = prior_submap.get_all_points().reshape(-1, 3)
+                    prev_colors = prior_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
+                    pcd_prev = o3d.geometry.PointCloud()
+                    pcd_prev.points = o3d.utility.Vector3dVector(prev_pcd)
+                    color_prev = o3d.utility.Vector3dVector(prev_colors)
+                    pcd_prev.colors = color_prev
+                    curr_pcd = world_points.reshape(-1, 3)
+                    curr_pcd = apply_homography(H_relative, curr_pcd)
+                    curr_colors = colors.reshape(-1, 3).astype(np.float32) / 255.0
+                    pcd_curr = o3d.geometry.PointCloud()
+                    pcd_curr.points = o3d.utility.Vector3dVector(curr_pcd)
+                    color_curr = o3d.utility.Vector3dVector(curr_colors)
+                    pcd_curr.colors = color_curr
+                    # pcd_curr.transform(H_relative)
+                    # o3d.visualization.draw_geometries([pcd_prev, pcd_curr])
+                    # o3d.visualization.draw_geometries([pcd_curr])
+                    # moved, trans_matrix = move(down=-0.01, up=0.01, base_pcd=pcd_prev, move_pcd=pcd_curr, is_begin=False)
+                    moved, trans_matrix, point_indices = move(
+                        down=-0.01,
+                        up=0.01,
+                        base_pcd=pcd_prev,
+                        move_pcd=pcd_curr,
+                        is_begin=False,
+                        return_indices=True
+                    )
+                    # moved = pcd_curr
+                    # trans_matrix = np.eye(4)
+                    moved = moved.transform(np.linalg.inv(trans_matrix))
+                    moved = moved.transform(np.linalg.inv(H_relative))
+                    moved_points = np.asarray(moved.points)
+                    moved_colors = np.asarray(moved.colors)
+                    colors = (moved_colors * 255).astype(np.uint8).reshape(colors.shape)
+                    world_points = moved_points.reshape(world_points.shape)
+                    H_relative = trans_matrix @ H_relative
+                else:
+                    H_relative = ransac_projective(current_pts, self.prior_pcd)
+                # o3d.visualization.draw_geometries([pcd_prev, moved])
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
 
-            # Visualize the point clouds
-            # pcd1 = o3d.geometry.PointCloud()
-            # pcd1.points = o3d.utility.Vector3dVector(self.prior_pcd)
-            # pcd1 = color_point_cloud_by_confidence(pcd1, self.prior_conf)
-            # pcd2 = o3d.geometry.PointCloud()
-            # current_pts = world_points[0,...].reshape(-1, 3)
-            # points = apply_homography(H_relative, current_pts)
-            # pcd2.points = o3d.utility.Vector3dVector(points)
-            # # pcd2 = color_point_cloud_by_confidence(pcd2, conf_flat, cmap='jet')
-            # o3d.visualization.draw_geometries([pcd1, pcd2])
 
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
+
             self.prior_pcd = pts_cam0_camn
             self.prior_conf = conf[non_lc_frame,...].reshape(-1)
-
+            # pcd = o3d.geometry.PointCloud()
+            # pcd.points = o3d.utility.Vector3dVector(pts_cam0_camn)
+            # pcd.colors = o3d.utility.Vector3dVector(colors[non_lc_frame,...].reshape(-1, 3).astype(np.float32) / 255.0)
+            # o3d.visualization.draw_geometries([pcd])
             # Add node to graph.
             self.graph.add_homography(new_pcd_num, H_w_submap)
 
@@ -362,13 +376,54 @@ class Solver:
         self.current_working_submap.add_all_poses(cam_to_world)
         self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         self.current_working_submap.set_conf_masks(conf) # TODO should make this work for point cloud conf as well
-
         # Add in loop closures if any were detected.
+        # print("================", len(self.current_working_submap.frame_ids))
+        # for index in range(len(self.current_working_submap.frame_ids)):
+        #     if index >=1:
+        #         points_world_detected = self.current_working_submap.get_frame_pointcloud(index-1).reshape(-1, 3)
+        #         points_world_query    = self.current_working_submap.get_frame_pointcloud(index).reshape(-1, 3)
+        #         colors_detected = self.current_working_submap.get_frame_color(index-1).reshape(-1, 3).astype(np.float32) / 255.0
+        #         colors_query    = self.current_working_submap.get_frame_color(index).reshape(-1, 3).astype(np.float32) / 255.0
+        #         H_relative_lc = ransac_projective(points_world_query, points_world_detected)
+        #         points_query_in_detected = apply_homography(H_relative_lc, points_world_query)
+        #         pcd_det  = o3d.geometry.PointCloud()
+        #         pcd_det.points  = o3d.utility.Vector3dVector(points_world_detected)
+        #         pcd_qry  = o3d.geometry.PointCloud()
+        #         pcd_qry.points  = o3d.utility.Vector3dVector(points_query_in_detected)
+        #         pcd_det.colors = o3d.utility.Vector3dVector(colors_detected)
+        #         pcd_qry.colors = o3d.utility.Vector3dVector(colors_query)
+        #         moved_lc, trans_lc = move(down=-0.05, up=0.05, base_pcd=pcd_det, move_pcd=pcd_qry, is_begin=False)
+        #         # o3d.visualization.draw_geometries([moved_lc, pcd_qry, pcd_det])
+        #         moved_lc = moved_lc.transform(np.linalg.inv(trans_lc))
+        #         moved_lc = moved_lc.transform(np.linalg.inv(H_relative_lc))
+        #         moved_points = np.asarray(moved_lc.points)
+        #         moved_colors = np.asarray(moved_lc.colors)
+        #         moved_colors = (moved_colors * 255).astype(np.uint8)
+        #         world_points[index] = moved_points.reshape(world_points[index].shape)
+        #         # o3d.visualization.draw_geometries([moved_lc, pcd_qry])
+        #         self.current_working_submap.set_frame_pointcloud(index, moved_points.reshape(self.current_working_submap.get_frame_pointcloud(index).shape))
+        #         self.current_working_submap.set_frame_color(index, moved_colors.reshape(self.current_working_submap.get_frame_color(index).shape))
+        #         H_relative_lc = trans_lc @ H_relative_lc
+        #         self.graph.add_between_factor(index-1, index, H_relative_lc, self.graph.relative_noise)
+        # self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         for index, loop in enumerate(detected_loops):
             assert loop.query_submap_id == self.current_working_submap.get_id()
-
+            #时间线:
+            # 历史子图1 (detected_submap_id=1)
+            # 历史子图2 (detected_submap_id=2)
+            # 历史子图3 (detected_submap_id=3)
+            # ↓
+            # 当前子图 (query_submap_id=4)
+            # │
+            # ├── 帧0
+            # ├── 帧1
+            # ├── 帧2 → 检测到与历史子图2匹配 (loop_index=2, detected_submap_id=2)
+            # ├── 帧3
+            # └── 帧4
             loop_index = self.current_working_submap.get_last_non_loop_frame_index() + index + 1
-
+            print("loop index", loop_index)
+            print("query submap id", loop.query_submap_id)
+            print("detected submap id", loop.detected_submap_id)
             if self.use_sim3:
                 pose_world_detected = self.map.get_submap(loop.detected_submap_id).get_pose_subframe(loop.detected_submap_frame)
                 pose_world_query = self.current_working_submap.get_pose_subframe(loop_index)
@@ -379,7 +434,37 @@ class Solver:
                 points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
                 points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
                 H_relative_lc = ransac_projective(points_world_query, points_world_detected)
-
+                # points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
+                # points_world_query    = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
+                # colors_detected = self.map.get_submap(loop.detected_submap_id).get_frame_color(loop.detected_submap_frame).reshape(-1, 3).astype(np.float32) / 255.0
+                # colors_query    = self.current_working_submap.get_frame_color(loop_index).reshape(-1, 3).astype(np.float32) / 255.0
+                # H_relative_lc = ransac_projective(points_world_query, points_world_detected)
+                # points_query_in_detected = apply_homography(H_relative_lc, points_world_query)
+                # pcd_det  = o3d.geometry.PointCloud()
+                # pcd_det.points  = o3d.utility.Vector3dVector(points_world_detected)
+                # pcd_qry  = o3d.geometry.PointCloud()
+                # pcd_qry.points  = o3d.utility.Vector3dVector(points_query_in_detected)
+                # pcd_det.colors = o3d.utility.Vector3dVector(colors_detected)
+                # pcd_qry.colors = o3d.utility.Vector3dVector(colors_query)
+                # moved_lc, trans_lc = move(down=-0.05, up=0.05, base_pcd=pcd_det, move_pcd=pcd_qry, is_begin=False)
+                # # o3d.visualization.draw_geometries([moved_lc, pcd_qry, pcd_det])
+                # moved_lc = moved_lc.transform(np.linalg.inv(trans_lc))
+                # moved_lc = moved_lc.transform(np.linalg.inv(H_relative_lc))
+                # moved_points = np.asarray(moved_lc.points)
+                # moved_colors = np.asarray(moved_lc.colors)
+                # moved_colors = (moved_colors * 255).astype(np.uint8)
+                # world_points[loop_index] = moved_points.reshape(world_points[loop_index].shape)
+                # # o3d.visualization.draw_geometries([moved_lc, pcd_qry])
+                # self.current_working_submap.set_frame_pointcloud(loop_index, moved_points.reshape(self.current_working_submap.get_frame_pointcloud(loop_index).shape))
+                # self.current_working_submap.set_frame_color(loop_index, moved_colors.reshape(self.current_working_submap.get_frame_color(loop_index).shape))
+                # H_relative_lc = trans_lc @ H_relative_lc
+                #
+                # # H_relative_lc = H_relative_lc @ trans_lc
+                # # o3d.io.write_point_cloud("detected.pcd", pcd_det)
+                # # o3d.io.write_point_cloud("query.pcd", pcd_qry)
+                # #
+                # # o3d.io.write_point_cloud(f"./test_pcd/{num}.pcd", moved_lc)
+                # # o3d.visualization.draw_geometries([moved_lc])
 
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
@@ -388,31 +473,8 @@ class Solver:
             # print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
 
             # print("relative_pose factor added", relative_pose)
-
-            # Visualize query and detected frames
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(loop.detected_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(loop.query_submap_frame).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
-
-            # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            # axes[0].imshow(self.map.get_submap(loop.detected_submap_id).get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[0].set_title("Detect")
-            # axes[0].axis("off")  # Hide axis
-            # axes[1].imshow(self.current_working_submap.get_frame_at_index(0).cpu().numpy().transpose(1,2,0))
-            # axes[1].set_title("Query")
-            # axes[1].axis("off")
-            # plt.show()
+        self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         self.map.add_submap(self.current_working_submap)
-
-        # Add GNSS measurements if available
-        # if gnss_measurements is not None and len(gnss_measurements) > 0:
-        #     print(f"Adding {len(gnss_measurements)} GNSS measurements to graph")
-        #     self.graph.add_gnss(gnss_measurements)
     def test_add_points(self, pred_dict, gnss_measurements=None):
         """
         Args:
@@ -470,12 +532,13 @@ class Solver:
         else:
             prior_pcd_num = self.map.get_largest_key()
             prior_submap = self.map.get_submap(prior_pcd_num)
-
             current_pts = world_points[0,...].reshape(-1, 3)
         
             # TODO conf should be using the threshold in its own submap
-            good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
-            
+            # good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
+            prior_thr   = prior_submap.get_conf_threshold()
+            curr_thr    = prior_submap.get_conf_threshold()   # 如果当前子图也有自己的阈值，改用它
+            good_mask = (self.prior_conf.reshape(-1) > prior_thr) & (conf[0,:].reshape(-1) > curr_thr)
             if self.use_sim3:
                 # Note we still use H and not T in variable names so we can share code with the Sim3 case, 
                 # and SIM3 and SE3 are also subsets of the SL4 group
@@ -495,8 +558,42 @@ class Solver:
                 world_points *= scale_factor
                 cam_to_world[:, 0:3, 3] *= scale_factor
             else:
+                # R_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,0:3]
+                # t_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,3]
+                # T_temp = np.eye(4)
+                # T_temp[0:3,0:3] = R_temp
+                # T_temp[0:3,3] = t_temp
+                # T_temp = np.linalg.inv(T_temp)
+                # scale_factor = np.mean(np.linalg.norm((T_temp[0:3,0:3] @ self.prior_pcd[good_mask].T).T + T_temp[0:3,3], axis=1) / np.linalg.norm(current_pts[good_mask], axis=1))
+                # print(colored("scale factor", 'green'), scale_factor)
+                # # apply scale factor to points and poses
+                # world_points *= scale_factor
+                # # cam_to_world[:, 0:3, 3] *= scale_factor
+                # current_pts[good_mask] *= scale_factor
                 H_relative = ransac_projective(current_pts[good_mask], self.prior_pcd[good_mask])
-            
+                # trans = turbo_reg(current_pts[good_mask], self.prior_pcd[good_mask])
+                # print(f"=================================={H_relative}==================================")
+                # print(f"=================================={trans}==================================")
+                # H_relative = trans
+                # R_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,0:3]
+                # t_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,3]
+                # T_temp = np.eye(4)
+                # T_temp[0:3,0:3] = R_temp
+                # T_temp[0:3,3] = t_temp
+                # T_temp = np.linalg.inv(T_temp)
+                # scale_factor = np.mean(np.linalg.norm((T_temp[0:3,0:3] @ self.prior_pcd[good_mask].T).T + T_temp[0:3,3], axis=1) / np.linalg.norm(current_pts[good_mask], axis=1))
+                # print(colored("scale factor", 'green'), scale_factor)
+                # # H_relative = np.eye(4)
+                # H_relative[0:3,0:3] = R_temp
+                # H_relative[0:3,3] = t_temp
+                # print(f"=================================={H_relative}==================================")
+                # # apply scale factor to points and poses
+                # world_points *= scale_factor
+                # cam_to_world[:, 0:3, 3] *= scale_factor
+                # #R_temp, t_temp = icp(current_pts[good_mask], self.prior_pcd[good_mask])
+                # # H_relative = np.eye(4)
+                # # H_relative[0:3,0:3] = R_temp
+                # # H_relative[0:3,3] = t_temp
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
 
             # # Visualize the point clouds
@@ -514,7 +611,7 @@ class Solver:
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
             self.prior_pcd = pts_cam0_camn
             self.prior_conf = conf[non_lc_frame,...].reshape(-1)
-
+            
             # Add node to graph.
             self.graph.add_homography(new_pcd_num, H_w_submap)
 
@@ -581,7 +678,8 @@ class Solver:
                 points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
                 points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
                 H_relative_lc = ransac_projective(points_world_query, points_world_detected)
-
+                # trans_lc = turbo_reg(points_world_query, points_world_detected)
+                # H_relative_lc = trans_lc
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
 
@@ -602,11 +700,11 @@ class Solver:
                     submap_id = self.current_working_submap.get_id()
                     
                     # 添加GNSS约束
-                    self.graph.add_gnss_to_submap(
-                        submap_id, 
-                        enu, 
-                        scale_factor=self.scale_factor if self.scale_aligned else 180
-                    )
+                    # self.graph.add_gnss_to_submap(
+                    #     submap_id, 
+                    #     enu, 
+                    #     scale_factor=self.scale_factor if self.scale_aligned else 180
+                    # )
 
     def sample_pixel_coordinates(self, H, W, n):
         # Sample n random row indices (y-coordinates)

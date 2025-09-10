@@ -69,7 +69,37 @@ class VideoProcess:
             (minutes, 1),
             (int(seconds * 10000), 10000),  # 以分数形式存储秒
         )
+    def _write_gnss_to_exif_in(self, frame, lat, lon, alt):
+        """将指定的 lat, lon, alt 数据写入图片的 EXIF"""
+        # 构造 EXIF 数据
+        exif_dict = {
+            "GPS": {
+                piexif.GPSIFD.GPSLatitudeRef: "N" if lat >= 0 else "S",
+                piexif.GPSIFD.GPSLatitude: self._convert_to_degrees(abs(lat)),
+                piexif.GPSIFD.GPSLongitudeRef: "E" if lon >= 0 else "W",
+                piexif.GPSIFD.GPSLongitude: self._convert_to_degrees(abs(lon)),
+                piexif.GPSIFD.GPSAltitudeRef: 0 if alt >= 0 else 1,
+                piexif.GPSIFD.GPSAltitude: (int(abs(alt) * 1000), 1000),
+            },
+            "0th": {},  # 主图像标签（必须存在）
+            "1st": {},  # 缩略图标签（必须存在）
+            "Exif": {},  # Exif 标签（可选）
+        }
 
+        # 将 EXIF 数据序列化为字节
+        exif_bytes = piexif.dump(exif_dict)
+
+        # 临时保存图片并注入 EXIF
+        temp_path = "temp.jpg"
+        cv2.imwrite(temp_path, frame)
+        piexif.insert(exif_bytes, temp_path)
+
+        # 重新读取带 EXIF 的图片
+        with open(temp_path, "rb") as f:
+            img_data = f.read()
+        os.remove(temp_path)
+
+        return img_data
     def _write_gnss_to_exif(self, frame, frame_num):
         """将 GNSS 数据写入图片的 EXIF"""
         if frame_num not in self.gnss_data:
@@ -108,7 +138,26 @@ class VideoProcess:
         os.remove(temp_path)
 
         return img_data
+    def inject_gnss_to_image(self, image_path, lat, lon, alt, output_image_path):
+        """
+        注入 GPS 数据到指定图片的 EXIF 中
+        :param image_path: 输入图片路径
+        :param lat: 纬度
+        :param lon: 经度
+        :param alt: 高度
+        :param output_image_path: 输出的图片路径
+        """
+        # 读取图像
+        frame = cv2.imread(image_path)
+        
+        # 注入 GPS 数据到 EXIF
+        img_data = self._write_gnss_to_exif_in(frame, lat, lon, alt)
+        
+        # 将带有 EXIF 的图片保存到指定位置
+        with open(output_image_path, "wb") as f:
+            f.write(img_data)
 
+        print(f"Successfully injected GPS data to image: {output_image_path}")
     def extract_frames(self, frame_interval, output_dir="./temp_frames_120"):
         """
         抽帧并注入 GNSS 数据到 EXIF

@@ -167,4 +167,5 @@ skyseg.onnx
 /.idea/
 /results/
 /temp_frames_120/
+/temp_frames_test/
 poses.txt

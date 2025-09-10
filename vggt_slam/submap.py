@@ -22,23 +22,36 @@ class Submap:
         self.voxelized_points = None
         self.last_non_loop_frame_index = None
         self.frame_ids = None
-    
     def add_all_poses(self, poses):
         self.poses = poses
-
+    def get_all_points(self):
+        return self.pointclouds
+    def get_all_colors(self):
+        return self.colors
+    def get_all_conf_masks(self):
+        return self.conf_masks
+    def get_all_confidences(self):
+        return self.conf
+    def transH_world_map(self, trans):
+        self.H_world_map = trans @ self.H_world_map
+    def trans(self, trans):
+        self.poses = self.poses @ trans
+        self.H_world_map = trans @ self.H_world_map
     def add_all_points(self, points, colors, conf, conf_threshold_percentile, intrinsics):
         self.pointclouds = points
         self.colors = colors
         self.conf = conf
         self.conf_threshold = np.percentile(self.conf, conf_threshold_percentile)
         self.vggt_intrinscs = intrinsics
-            
+    def update_all_points(self, points, colors):
+        self.pointclouds = points
+        self.colors = colors
     def add_all_frames(self, frames):
         self.frames = frames
     
     def add_all_retrieval_vectors(self, retrieval_vectors):
         self.retrieval_vectors = retrieval_vectors
-    
+
     def get_id(self):
         return self.submap_id
 
@@ -74,7 +87,12 @@ class Submap:
     
     def get_frame_pointcloud(self, pose_index):
         return self.pointclouds[pose_index]
-
+    def set_frame_pointcloud(self, pose_index, pointcloud):
+        self.pointclouds[pose_index] = pointcloud
+    def set_frame_color(self, pose_index, color):
+        self.colors[pose_index] = color
+    def get_frame_color(self, pose_index):
+        return self.colors[pose_index]
     def set_frame_ids(self, file_paths):
         """
         Extract the frame number (integer or decimal) from the file names, 
@@ -181,22 +199,5 @@ class Submap:
             # 如果有其他与尺度相关的数据，也需要缩放
             if hasattr(self, 'conf'):
                 self.conf = self.conf * scale_factor  # 如果conf与距离相关
-    
-    # def test_get_points_in_world_frame(self, scale_factor=1.0):
-    #     """
-    #     获取世界坐标系中的点，考虑尺度缩放
-        
-    #     Args:
-    #         scale_factor: 缩放因子，默认为1.0（无缩放）
-    #     """
-    #     points = self.filter_data_by_confidence(self.pointclouds)
-        
-    #     # 应用尺度缩放
-    #     points = points * scale_factor
-        
-    #     points_flat = points.reshape(-1, 3)
-    #     points_homogeneous = np.hstack([points_flat, np.ones((points_flat.shape[0], 1))])
-    #     points_transformed = (self.H_world_map @ points_homogeneous.T).T
-    #     return points_transformed[:, :3] / points_transformed[:, 3:]
 
 

@@ -21,6 +21,20 @@ class GNSSprocesser:
         self.enu_history = []
         self.ref_east, self.ref_north = self.utm_transformer(self.ref_lon, self.ref_lat)
         # print(self.ref_east, self.ref_north)
+    def enu_to_lla(self, enu):
+        """将局部ENU坐标系转换为WGS84坐标"""
+        delta_east = enu[0]
+        delta_north = -enu[1]
+        
+        east = self.ref_east + delta_east
+        north = self.ref_north + delta_north
+        
+        lon, lat = self.utm_transformer(east, north, inverse=True)
+        
+        alt = enu[2] + self.ref_alt
+        
+        return np.array([lat, lon, alt])
+        
     def lla_to_enu(self, lat, lon, alt):
         """将WGS84坐标转换为局部ENU坐标系"""
         east, north = self.utm_transformer(lon, lat)
@@ -36,4 +50,7 @@ class GNSSprocesser:
 if __name__ == "__main__":
     gnss = GNSSprocesser()
     gnss.setReference([30.411221, 104.077182, 707])
-    print(gnss.lla_to_enu(30.411280, 104.077185, 707))
+    enu_data = gnss.lla_to_enu(30.411280, 104.077185, 707)
+    gnss_data = gnss.enu_to_lla(enu_data)
+    print(gnss_data)
+    print(enu_data)

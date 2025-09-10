@@ -125,18 +125,27 @@ class GraphMap:
         pcd_all.colors = o3d.utility.Vector3dVector(colors_all)
         o3d.io.write_point_cloud(file_name, pcd_all)
 
+
     def test_write_points_to_file(self, file_name, scale):
         pcd_all = []
         colors_all = []
+        num = 0
         for submap in self.ordered_submaps_by_key():
             pcd = submap.get_points_in_world_frame()
             pcd = pcd.reshape(-1, 3)
-            pcd_all.append(pcd * scale)
-            colors_all.append(submap.get_points_colors())
+            pcd = pcd * scale
+            colors = submap.get_points_colors()
+            pcd_o3d = o3d.geometry.PointCloud()
+            pcd_o3d.points = o3d.utility.Vector3dVector(pcd)
+            if colors.max() > 1.0:
+                colors = colors / 255.0 
+            pcd_o3d.colors = o3d.utility.Vector3dVector(colors)
+            o3d.io.write_point_cloud(file_name + str(num) + ".pcd", pcd_o3d)
+            num += 1
+
         pcd_all = np.concatenate(pcd_all, axis=0)
         colors_all = np.concatenate(colors_all, axis=0)
-        if colors_all.max() > 1.0:
-            colors_all = colors_all / 255.0
-        pcd_all = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pcd_all))
-        pcd_all.colors = o3d.utility.Vector3dVector(colors_all)
-        o3d.io.write_point_cloud(file_name, pcd_all)
+        pcd_all_o3d = o3d.geometry.PointCloud()
+        pcd_all_o3d.points = o3d.utility.Vector3dVector(pcd_all)
+        pcd_all_o3d.colors = o3d.utility.Vector3dVector(colors_all)
+        o3d.io.write_point_cloud(file_name, pcd_all_o3d)

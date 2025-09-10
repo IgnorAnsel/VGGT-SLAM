@@ -32,6 +32,7 @@ class PoseGraph:
             enu: ENU坐标 (east, north, up)
             scale_factor: GNSS坐标的缩放因子
         """
+        # scale_factor = 185
         print("use scale factor: ", scale_factor)
         key = X(submap_id)
         if key not in self.initialized_nodes:
@@ -72,7 +73,7 @@ class PoseGraph:
         plt.plot(positions[:, 0], positions[:, 1], 'b-', label='Optimized Trajectory')
         plt.scatter(positions[:, 0], positions[:, 1], c=range(len(positions)), 
                 cmap='viridis', label='Optimized Positions')
-        
+
         # Plot GNSS measurements if available
         if hasattr(self.gnss_processor, 'enu_history') and len(self.gnss_processor.enu_history) > 0:
             gnss_positions = np.array(self.gnss_processor.enu_history)

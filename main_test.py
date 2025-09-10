@@ -1,4 +1,7 @@
 import os
+
+from pcltest5 import move
+
 os.environ.update({"QT_QPA_PLATFORM_PLUGIN_PATH": "/home/ansel/anaconda3/envs/mast3r-slam/lib/python3.11/site-packages/cv2/qt/plugins/platforms"})
 import glob
 import argparse
@@ -16,13 +19,14 @@ from vggt.models.vggt import VGGT
 
 from video_process import VideoProcess as VP
 from enu import process_data
+import open3d as o3d
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 
 
 parser.add_argument("--video_path", type=str, default="/home/ansel/works/datasets/DJI_20250725181205_0001_V.mp4", help="Path to video file")
 parser.add_argument("--gnss_path", type=str, default="/home/ansel/works/datasets/DJI_20250725181205_0001_V.SRT", help="Path to GNSS file")
-parser.add_argument("--image_folder", type=str, default="/home/ansel/works/vggt-slam/VGGT-SLAM/temp_frames", help="Path to folder containing images")
-parser.add_argument("--downsample_factor_video", type=int, default="2", help="Factor to frame extracting")
+parser.add_argument("--image_folder", type=str, default="/home/ansel/works/vggt-slam/VGGT-SLAM/test", help="Path to folder containing images")
+parser.add_argument("--downsample_factor_video", type=int, default=2, help="Factor to frame extracting")
 parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
 parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
 parser.add_argument("--log_results", action="store_true", help="save txt file with results")
@@ -33,12 +37,15 @@ parser.add_argument("--plot_focal_lengths", action="store_true", help="Plot foca
 parser.add_argument("--submap_size", type=int, default=3, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
 parser.add_argument("--downsample_factor", type=int, default=2, help="Factor to reduce image size by 1/N")
-parser.add_argument("--max_loops", type=int, default=1, help="Maximum number of loop closures per submap")
+parser.add_argument("--max_loops", type=int, default=3, help="Maximum number of loop closures per submap")
 parser.add_argument("--min_disparity", type=float, default=5, help="Minimum disparity to generate a new keyframe")
 parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
 parser.add_argument("--conf_threshold", type=float, default=15.0, help="Initial percentage of low-confidence points to filter out")
 parser.add_argument("--use_video", action="store_true", help="Use video instead of images")
 
+# submap_size 3
+# max_loops 1
+# min_disparity 5
 # parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
 # parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
 # parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
@@ -54,7 +61,32 @@ parser.add_argument("--use_video", action="store_true", help="Use video instead 
 # parser.add_argument("--min_disparity", type=float, default=50, help="Minimum disparity to generate a new keyframe")
 # parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
 # parser.add_argument("--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out")
+def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
+    """
+    Color a point cloud based on per-point confidence values.
 
+    Parameters:
+        pcd (o3d.geometry.PointCloud): The point cloud.
+        confidence (np.ndarray): Confidence values, shape (N,).
+        cmap (str): Matplotlib colormap name.
+    """
+    assert len(confidence) == len(pcd.points), "Confidence length must match number of points"
+
+    # Normalize confidence to [0, 1]
+    confidence_normalized = (confidence - np.min(confidence)) / (np.ptp(confidence) + 1e-8)
+
+    # Map to colors using matplotlib colormap
+    colormap = plt.get_cmap(cmap)
+    colors = colormap(confidence_normalized)[:, :3]  # Drop alpha channel
+
+    # Assign to point cloud
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
+def create_point_cloud(points, colors):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
 def main():
     """
     Main function that wraps the entire pipeline of VGGT-SLAM.
@@ -83,12 +115,10 @@ def main():
     
     vp_ = VP()
     if args.use_video:
-        import time
         vp_ = VP(args.video_path)
         if args.gnss_path:
             vp_.add_gnss_path(args.gnss_path)
         image_folder = vp_.extract_frames(args.downsample_factor_video)
-        # time.sleep(3)
     else:
         image_folder = args.image_folder
     # Use the provided image folder path
@@ -133,12 +163,34 @@ def main():
             predictions = solver.run_predictions(image_names_subset, model, args.max_loops)
 
             data.append(predictions["intrinsic"][:,0,0])
-            solver.test_add_points(predictions, real_t_subset)
-            # solver.add_points(predictions)
+            # solver.test_add_points(predictions, real_t_subset)
+
+            solver.add_points(predictions)
+            # if solver.current_working_submap.get_id() >=1:
+            #     latest_submap = solver.map.get_submap(solver.current_working_submap.get_id()-1)
+            #     current_submap = solver.map.get_submap(solver.current_working_submap.get_id())
+            #     prev_pcd = latest_submap.get_all_points().reshape(-1, 3)
+            #     prev_colors = latest_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
+            #     current_pcd = current_submap.get_all_points().reshape(-1, 3)
+            #     current_colors = current_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
+            #     pcd_prev = create_point_cloud(prev_pcd, prev_colors)
+            #     pcd_current = create_point_cloud(current_pcd, current_colors)
+            #     moved, trans = move(down= -0.05, up= 0.05, base_pcd= pcd_prev, move_pcd= pcd_current, is_begin= False)
+            #     moved = moved.transform(trans)
+            #     moved_points = np.asarray(moved.points)
+            #     moved_colors = np.asarray(moved.colors)
+            #     moved_colors = (moved_colors * 255).astype(np.uint8).reshape(current_submap.get_all_colors().shape)
+            #     moved_points = moved_points.reshape(current_submap.get_all_points().shape)
+            #     solver.map.get_submap(solver.current_working_submap.get_id()).update_all_points(moved_points, moved_colors)
+            #     print("H_world_map", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
+            #     solver.map.get_submap(solver.current_working_submap.get_id()).transH_world_map(trans)
+            #     print("H_world_map1111", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
             solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
-
+            # print("H_world_map2222", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
             loop_closure_detected = len(predictions["detected_loops"]) > 0
+
+
             if args.vis_map:
                 if loop_closure_detected:
                     solver.update_all_submap_vis()
@@ -149,10 +201,9 @@ def main():
                     solver.update_all_submap_vis()
                 else:
                     solver.update_latest_submap_vis()
-            # Reset for next submap.
             image_names_subset = image_names_subset[-args.overlapping_window_size:]
             real_t_subset = real_t_subset[-args.overlapping_window_size:]
-    solver.graph.visualize_gnss_constraints()
+    # solver.graph.visualize_gnss_constraints()
     print("Total number of submaps in map", solver.map.get_num_submaps())
     print("Total number of loop closures in map", solver.graph.get_num_loops())
 
@@ -161,11 +212,12 @@ def main():
         solver.update_all_submap_vis()
 
     if args.log_results:
-        solver.map.test_write_poses_to_file(args.log_path, solver.scale_factor_mean)
+        solver.map.write_poses_to_file(args.log_path)
+        # solver.map.test_write_poses_to_file(args.log_path, solver.scale_factor_mean)
 
         # Log the full point cloud as one file, used for visualization.
-        solver.map.test_write_points_to_file(args.log_path.replace(".txt", "_points.pcd"), solver.scale_factor_mean)
-
+        # solver.map.test_write_points_to_file(args.log_path.replace(".txt", "_points.pcd"), solver.scale_factor_mean)
+        solver.map.write_points_to_file(args.log_path.replace(".txt", "_points.pcd"))
         if not args.skip_dense_log:
             # Log the dense point cloud for each submap.
             solver.map.save_framewise_pointclouds(args.log_path.replace(".txt", "_logs"))
@@ -184,7 +236,6 @@ def main():
         plt.ylabel("Focal lengths")
         plt.grid()
         plt.show()
-
 
 if __name__ == "__main__":
     main()
