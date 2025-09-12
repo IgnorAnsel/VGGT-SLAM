@@ -138,7 +138,16 @@ def ransac_projective_improved(X1_np, X2_np, threshold=0.01, max_iter=300, sampl
     X1 = torch.tensor(X1_np, dtype=torch.float32, device=device)
     X2 = torch.tensor(X2_np, dtype=torch.float32, device=device)
     N = X1.shape[0]
-    
+    pcd1 = o3d.geometry.PointCloud()
+    pcd1.points = o3d.utility.Vector3dVector(X1_np)
+    pcd1.colors = o3d.utility.Vector3dVector(
+        np.tile(np.array([1, 0, 0]), (X1_np.shape[0], 1))
+    ) # 统一红色
+    pcd2 = o3d.geometry.PointCloud()
+    pcd2.points = o3d.utility.Vector3dVector(X2_np)
+    pcd2.colors = o3d.utility.Vector3dVector(
+        np.tile(np.array([0, 1, 0]), (X2_np.shape[0], 1))
+    ) # 统一绿色
     best_inlier_count = -1
     best_H = None
     
@@ -172,11 +181,24 @@ def ransac_projective_improved(X1_np, X2_np, threshold=0.01, max_iter=300, sampl
             # 处理估计失败的情况
             print(f"Iteration {i} failed: {e}")
             continue
-    
+    # o3d.visualization.draw_geometries([pcd1, pcd2])
+    pcd1.transform(best_H)
+    print("H_relative: ", best_H)
+    # o3d.visualization.draw_geometries([pcd1])
     return best_H
 def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    pcd1 = o3d.geometry.PointCloud()
+    pcd1.points = o3d.utility.Vector3dVector(X1_np)
+    pcd1.colors = o3d.utility.Vector3dVector(
+        np.tile(np.array([1, 0, 0]), (X1_np.shape[0], 1))
+    ) # 统一红色
+    pcd2 = o3d.geometry.PointCloud()
+    pcd2.points = o3d.utility.Vector3dVector(X2_np)
+    pcd2.colors = o3d.utility.Vector3dVector(
+        np.tile(np.array([0, 1, 0]), (X2_np.shape[0], 1))
+    ) # 统一绿色
+    # o3d.visualization.draw_geometries([pcd2, pcd1])
     # Convert to torch tensors on GPU
     X1 = torch.tensor(X1_np, dtype=torch.float32, device=device)
     X2 = torch.tensor(X2_np, dtype=torch.float32, device=device)
@@ -201,11 +223,14 @@ def ransac_projective(X1_np, X2_np, threshold=0.01, max_iter=300, sample_size=5)
     # Compute inlier masks and counts.
     inlier_masks = errors < threshold  # (max_iter, N)
     inlier_counts = inlier_masks.sum(dim=1)
-
+    # print("inlier_counts", inlier_counts)
     # Select best hypothesis
+    # o3d.visualization.draw_geometries([pcd2, pcd1])
     best_idx = torch.argmax(inlier_counts)
     best_H = H_ests[best_idx].cpu().numpy()
-
+    pcd1.transform(best_H)
+    # print("H_relative: ", best_H)
+    # o3d.visualization.draw_geometries([pcd1])
     return best_H
 def turbo_reg(X1_np, X2_np):
     kpts_src = torch.from_numpy(X1_np)

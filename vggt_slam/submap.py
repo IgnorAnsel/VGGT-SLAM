@@ -151,15 +151,49 @@ class Submap:
             if ignore_loop_closure_frames and index == self.last_non_loop_frame_index:
                 break
         return point_list, frame_id_list, frame_conf_mask
+    def updata_world_points(self, world_points, input_colors):
+        # temp = np.prod(world_points[:-1])
+        homogeneous = np.hstack([world_points, np.ones((len(world_points), 1))])
+        H_inv = np.linalg.inv(self.H_world_map)
+        sensor_points = (H_inv @ homogeneous.T).T
+        temp = sensor_points[:, :3] / sensor_points[:, 3:]
 
-    def get_points_in_world_frame(self):
-        points = self.filter_data_by_confidence(self.pointclouds)
-
+        self.pointclouds = temp.reshape(self.pointclouds.shape)
+        self.colors = input_colors.reshape(self.colors.shape)
+    def updata_world_points_with_id(self, world_points, input_colors, id):
+        # temp = np.prod(world_points[:-1])
+        homogeneous = np.hstack([world_points, np.ones((len(world_points), 1))])
+        H_inv = np.linalg.inv(self.H_world_map)
+        sensor_points = (H_inv @ homogeneous.T).T
+        temp = sensor_points[:, :3] / sensor_points[:, 3:]
+        self.pointclouds[id] = temp.reshape(self.pointclouds[id].shape)
+        self.colors[id] = input_colors.reshape(self.colors[id].shape)
+    def get_points_in_world_frame(self, is_fitter = True):
+        if is_fitter:
+            points = self.filter_data_by_confidence(self.pointclouds)
+        else:
+            points = self.pointclouds
+        points_flat = points.reshape(-1, 3)
+        points_homogeneous = np.hstack([points_flat, np.ones((points_flat.shape[0], 1))])
+        # test = np.eye(4)
+        # print("H_world_map", self.H_world_map)
+        points_transformed = (self.H_world_map @ points_homogeneous.T).T
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points_transformed[:, :3] / points_transformed[:, 3:])
+        pcd.colors = o3d.utility.Vector3dVector(self.filter_data_by_confidence(self.colors) / 255.0)
+        # o3d.visualization.draw_geometries([pcd])
+        return points_transformed[:, :3] / points_transformed[:, 3:]
+    def get_points_in_world_frame_with_id(self, is_fitter = True, id = 0):
+        if is_fitter:
+            points = self.filter_data_by_confidence(self.pointclouds)
+        else:
+            points = self.pointclouds[id]
         points_flat = points.reshape(-1, 3)
         points_homogeneous = np.hstack([points_flat, np.ones((points_flat.shape[0], 1))])
         points_transformed = (self.H_world_map @ points_homogeneous.T).T
         return points_transformed[:, :3] / points_transformed[:, 3:]
-
+    def get_points_len(self):
+        return self.pointclouds.shape[0]
     def get_voxel_points_in_world_frame(self, voxel_size, nb_points=8, factor_for_outlier_rejection=2.0):
         if self.voxelized_points is None:
             if voxel_size > 0.0:
@@ -186,9 +220,17 @@ class Submap:
         voxelized_points_in_world_frame.points = o3d.utility.Vector3dVector(points_transformed[:, :3] / points_transformed[:, 3:])
         voxelized_points_in_world_frame.colors = self.voxelized_points.colors
         return voxelized_points_in_world_frame
-    
-    def get_points_colors(self):
-        colors = self.filter_data_by_confidence(self.colors)
+    def get_points_colors(self, is_fitter = True):
+        if is_fitter:
+            colors = self.filter_data_by_confidence(self.colors)
+        else:
+            colors = self.colors
+        return colors.reshape(-1, 3)
+    def get_points_colors_with_id(self, is_fitter = True, id = 0):
+        if is_fitter:
+            colors = self.filter_data_by_confidence(self.colors)
+        else:
+            colors = self.colors[id]
         return colors.reshape(-1, 3)
     def scale_points(self, scale_factor):
         """Scale all points in this submap by the given factor"""

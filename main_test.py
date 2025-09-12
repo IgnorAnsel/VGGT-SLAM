@@ -166,30 +166,9 @@ def main():
             # solver.test_add_points(predictions, real_t_subset)
 
             solver.add_points(predictions)
-            # if solver.current_working_submap.get_id() >=1:
-            #     latest_submap = solver.map.get_submap(solver.current_working_submap.get_id()-1)
-            #     current_submap = solver.map.get_submap(solver.current_working_submap.get_id())
-            #     prev_pcd = latest_submap.get_all_points().reshape(-1, 3)
-            #     prev_colors = latest_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
-            #     current_pcd = current_submap.get_all_points().reshape(-1, 3)
-            #     current_colors = current_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
-            #     pcd_prev = create_point_cloud(prev_pcd, prev_colors)
-            #     pcd_current = create_point_cloud(current_pcd, current_colors)
-            #     moved, trans = move(down= -0.05, up= 0.05, base_pcd= pcd_prev, move_pcd= pcd_current, is_begin= False)
-            #     moved = moved.transform(trans)
-            #     moved_points = np.asarray(moved.points)
-            #     moved_colors = np.asarray(moved.colors)
-            #     moved_colors = (moved_colors * 255).astype(np.uint8).reshape(current_submap.get_all_colors().shape)
-            #     moved_points = moved_points.reshape(current_submap.get_all_points().shape)
-            #     solver.map.get_submap(solver.current_working_submap.get_id()).update_all_points(moved_points, moved_colors)
-            #     print("H_world_map", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
-            #     solver.map.get_submap(solver.current_working_submap.get_id()).transH_world_map(trans)
-            #     print("H_world_map1111", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
-            solver.graph.optimize()
+            # solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
-            # print("H_world_map2222", solver.map.get_submap(solver.current_working_submap.get_id()).H_world_map)
             loop_closure_detected = len(predictions["detected_loops"]) > 0
-
 
             if args.vis_map:
                 if loop_closure_detected:

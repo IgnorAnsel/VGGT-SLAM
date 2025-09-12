@@ -7,10 +7,9 @@ import open3d as o3d
 import viser
 import viser.transforms as viser_tf
 from termcolor import colored
-
-from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
-from vggt.utils.load_fn import load_and_preprocess_images
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from vggt.vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
+from vggt.vggt.utils.load_fn import load_and_preprocess_images
+from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 from vggt_slam.loop_closure import ImageRetrieval
 from vggt_slam.frame_overlap import FrameTracker
@@ -19,7 +18,7 @@ from vggt_slam.submap import Submap
 from vggt_slam.h_solve import ransac_projective, ransac_projective_improved, apply_homography
 from vggt_slam.gradio_viewer import TrimeshViewer
 from KalmanFilter import KalmanFilter
-from pcltest5 import move, move2
+from pcltest5 import move, move2, icp
 
 class Viewer:
     def __init__(self, port: int = 8080):
@@ -105,7 +104,7 @@ class Viewer:
             for fr in frustums:
                 fr.visible = visible
 
-
+trans_matrix = np.eye(4)
 
 class Solver:
     def __init__(self,
@@ -114,7 +113,6 @@ class Solver:
         visualize_global_map: bool = False,
         use_sim3: bool = False,
         gradio_mode: bool = False):
-        
         self.init_conf_threshold = init_conf_threshold
         self.use_point_map = use_point_map
         self.gradio_mode = gradio_mode
@@ -150,6 +148,7 @@ class Solver:
         self.gnss_positions = []    # 存储GNSS位置历史
         self.last_visual_pos = None
         self.last_gnss_pos = None
+        self.num = 0;
         
         print("Starting viser server...")
     def align_scale(self):
@@ -197,7 +196,68 @@ class Solver:
                 point_size=point_size,
                 point_shape="circle",
             )
-
+    def set_clear_shander(self, prevsubmap, currsubmap, prepre = None):
+        if prepre is not None:
+            prepre_points_in_world_frame = prepre.get_points_in_world_frame(is_fitter=False)
+            prepre_points_colors = prepre.get_points_colors(is_fitter=False)
+            prepre_pcd = o3d.geometry.PointCloud()
+            prepre_pcd.colors = o3d.utility.Vector3dVector(prepre_points_colors.astype(np.float32) / 255.0)
+            prepre_pcd.points = o3d.utility.Vector3dVector(prepre_points_in_world_frame)
+            prev_points_in_world_frame_for = prevsubmap.get_points_in_world_frame_with_id(is_fitter=False, id = 3)
+            prev_points_colors_for = prevsubmap.get_points_colors_with_id(is_fitter=False, id = 3)
+            prev_pcd_for = o3d.geometry.PointCloud()
+            prev_pcd_for.points = o3d.utility.Vector3dVector(prev_points_in_world_frame_for)
+            prev_pcd_for.colors = o3d.utility.Vector3dVector(prev_points_colors_for.astype(np.float32) / 255.0)
+            prev_pcd_moved, trans = move(down=-0.05, up=0.05, base_pcd=prepre_pcd, move_pcd=prev_pcd_for,is_begin=False, is_trans=True)
+        prev_points_in_world_frame = prevsubmap.get_points_in_world_frame(is_fitter=False)
+        prev_points_colors = prevsubmap.get_points_colors(is_fitter=False)
+        name = str(currsubmap.get_id())
+        prev_pcd = o3d.geometry.PointCloud()
+        prev_pcd.colors = o3d.utility.Vector3dVector(prev_points_colors.astype(np.float32) / 255.0)
+        prev_pcd.points = o3d.utility.Vector3dVector(prev_points_in_world_frame)
+        curr_points_in_world_frame = currsubmap.get_points_in_world_frame(is_fitter=False)
+        curr_points_colors = currsubmap.get_points_colors(is_fitter=False)
+        curr_pcd = o3d.geometry.PointCloud()
+        curr_pcd.points = o3d.utility.Vector3dVector(curr_points_in_world_frame)
+        curr_pcd.colors = o3d.utility.Vector3dVector(
+            np.tile(np.array([0, 1, 0]), (curr_points_in_world_frame.shape[0], 1))
+        )
+        _, trans_icp = move(down=-0.05, up=0.05, base_pcd=prev_pcd, move_pcd=curr_pcd,is_begin=False, is_trans=True, is_just_return_trans=True)
+        # o3d.visualization.draw_geometries([prev_pcd, curr_pcd])
+        for index in range(currsubmap.get_points_len()):
+            # if index == 3:
+            #     continue
+            curr_points_in_world_frame = currsubmap.get_points_in_world_frame_with_id(is_fitter=False, id = index)
+            curr_points_colors = currsubmap.get_points_colors_with_id(is_fitter=False, id = index)
+            curr_pcd = o3d.geometry.PointCloud()
+            curr_pcd.points = o3d.utility.Vector3dVector(curr_points_in_world_frame)
+            curr_pcd.colors = o3d.utility.Vector3dVector(curr_points_colors.astype(np.float32) / 255.0)
+            # o3d.visualization.draw_geometries([curr_pcd])
+            curr_pcd.transform(trans_icp)
+            moved_pcd, _ = move(down=-0.05, up=0.05, base_pcd=prev_pcd, move_pcd=curr_pcd,is_begin=False, is_trans=False)
+            moved_pcd.transform(np.linalg.inv(trans_icp))
+            # o3d.visualization.draw_geometries([moved_pcd, curr_pcd])
+            currsubmap.updata_world_points_with_id(np.asarray(moved_pcd.points), (np.asarray(moved_pcd.colors) * 255).astype(np.uint8), index)
+        R_temp = trans_icp[:3,:3]
+        T_temp = trans_icp[:3,3]
+        points_in_world_frame = currsubmap.get_points_in_world_frame() @ R_temp.T + T_temp
+        points_colors = currsubmap.get_points_colors()
+        self.set_point_cloud(points_in_world_frame, points_colors, name, 0.001)
+    # def set_clear_shander(self, prevsubmap, currsubmap):
+    #     prev_points_in_world_frame = prevsubmap.get_points_in_world_frame(is_fitter=False)
+    #     prev_points_colors = prevsubmap.get_points_colors(is_fitter=False)
+    #     name = str(currsubmap.get_id())
+    #     prev_pcd = o3d.geometry.PointCloud()
+    #     prev_pcd.colors = o3d.utility.Vector3dVector(prev_points_colors.astype(np.float32) / 255.0)
+    #     prev_pcd.points = o3d.utility.Vector3dVector(prev_points_in_world_frame)
+    #     curr_points_in_world_frame = currsubmap.get_points_in_world_frame(is_fitter=False)
+    #     curr_points_colors = currsubmap.get_points_colors(is_fitter=False)
+    #     curr_pcd = o3d.geometry.PointCloud()
+    #     curr_pcd.points = o3d.utility.Vector3dVector(curr_points_in_world_frame)
+    #     curr_pcd.colors = o3d.utility.Vector3dVector(curr_points_colors.astype(np.float32) / 255.0)
+    #     moved_pcd, _ = move(down=-0.05, up=0.05, base_pcd=prev_pcd, move_pcd=curr_pcd,is_begin=False, is_trans=False)
+    #     currsubmap.updata_world_points(np.asarray(moved_pcd.points), (np.asarray(moved_pcd.colors) * 255).astype(np.uint8))
+    #     self.set_point_cloud(np.asarray(moved_pcd.points), (np.asarray(moved_pcd.colors) * 255).astype(np.uint8), name, 0.001)
     def set_submap_point_cloud(self, submap):
         # Add the point cloud to the visualization.
         points_in_world_frame = submap.get_points_in_world_frame()
@@ -217,18 +277,48 @@ class Solver:
 
     def export_3d_scene(self, output_path="output.glb"):
         return self.viewer.export(output_path)
+    # def updataViewer(self):
+    #     for index, submap in enumerate(self.map.get_submaps()):
 
     def update_all_submap_vis(self):
-        for submap in self.map.get_submaps():
+        # for submap in (self.map.get_submaps()):
+        #     self.set_submap_point_cloud(submap)
+        #     self.set_submap_poses(submap)
+
+        for index, submap in enumerate(self.map.get_submaps()):
+            if index >= 2:
+                prev_submap = self.map.get_submap(index - 2)
+                curr_submap = self.map.get_submap(index - 1)
+                self.set_clear_shander(prev_submap, curr_submap)
+                self.set_submap_poses(curr_submap)
+            # elif index == 1:
+            #     prev_submap = self.map.get_submap(index)
+            #     self.set_clear_shander(prev_submap, submap)
+            #     self.set_submap_poses(submap)
+            else:
+                self.set_submap_point_cloud(submap)
+                self.set_submap_poses(submap)
+
+
+    def update_latest_submap_vis(self):
+        # submap = self.map.get_latest_submap()
+        # self.set_submap_point_cloud(submap)
+        # self.set_submap_poses(submap)
+
+        if self.map.get_largest_key() >= 2:
+            submap = self.map.get_latest_submap()
+            curr_submap = self.map.get_submap(self.map.get_largest_key()-1)
+            prev_submap = self.map.get_submap(self.map.get_largest_key()-2)
+            self.set_clear_shander(prev_submap, curr_submap)
+            self.set_submap_poses(curr_submap)
+        else:
+            submap = self.map.get_latest_submap()
             self.set_submap_point_cloud(submap)
             self.set_submap_poses(submap)
 
-    def update_latest_submap_vis(self):
-        submap = self.map.get_latest_submap()
-        self.set_submap_point_cloud(submap)
-        self.set_submap_poses(submap)
-
     def add_points(self, pred_dict):
+        up_ = 0.10
+        down_ = -0.10
         """
         Args:
             pred_dict (dict):
@@ -243,6 +333,7 @@ class Solver:
             }
         """
         # Unpack prediction dict
+        global trans_matrix
         images = pred_dict["images"]  # (S, 3, H, W)
 
         extrinsics_cam = pred_dict["extrinsic"]  # (S, 3, 4)
@@ -292,6 +383,7 @@ class Solver:
             prior_thr   = prior_submap.get_conf_threshold()
             curr_thr    = prior_submap.get_conf_threshold()   # 如果当前子图也有自己的阈值，改用它
             good_mask = (self.prior_conf.reshape(-1) > prior_thr) & (conf[0,:].reshape(-1) > curr_thr)
+            trans_matrix = np.eye(4)
             if self.use_sim3:
                 # Note we still use H and not T in variable names so we can share code with the Sim3 case, 
                 # and SIM3 and SE3 are also subsets of the SL4 group
@@ -312,53 +404,147 @@ class Solver:
                 cam_to_world[:, 0:3, 3] *= scale_factor
             else:
                 H_relative = ransac_projective(current_pts, self.prior_pcd)
-                if prior_pcd_num >= 1:
-                    H_relative = ransac_projective(current_pts, self.prior_pcd)
-                    prev_pcd = prior_submap.get_all_points().reshape(-1, 3)
-                    prev_colors = prior_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
-                    pcd_prev = o3d.geometry.PointCloud()
-                    pcd_prev.points = o3d.utility.Vector3dVector(prev_pcd)
-                    color_prev = o3d.utility.Vector3dVector(prev_colors)
-                    pcd_prev.colors = color_prev
-                    curr_pcd = world_points.reshape(-1, 3)
-                    curr_pcd = apply_homography(H_relative, curr_pcd)
-                    curr_colors = colors.reshape(-1, 3).astype(np.float32) / 255.0
-                    pcd_curr = o3d.geometry.PointCloud()
-                    pcd_curr.points = o3d.utility.Vector3dVector(curr_pcd)
-                    color_curr = o3d.utility.Vector3dVector(curr_colors)
-                    pcd_curr.colors = color_curr
-                    # pcd_curr.transform(H_relative)
-                    # o3d.visualization.draw_geometries([pcd_prev, pcd_curr])
-                    # o3d.visualization.draw_geometries([pcd_curr])
-                    # moved, trans_matrix = move(down=-0.01, up=0.01, base_pcd=pcd_prev, move_pcd=pcd_curr, is_begin=False)
-                    moved, trans_matrix, point_indices = move(
-                        down=-0.01,
-                        up=0.01,
-                        base_pcd=pcd_prev,
-                        move_pcd=pcd_curr,
-                        is_begin=False,
-                        return_indices=True
-                    )
+                # # H_relative_test = H_relative @ trans_matrix
+                # curr_pcd = current_pts.reshape(-1, 3)
+                # curr_color = colors[0].reshape(-1, 3).astype(np.float32) / 255.0
+                # pcd_curr = o3d.geometry.PointCloud()
+                # pcd_curr.points = o3d.utility.Vector3dVector(curr_pcd)
+                # pcd_curr.colors = o3d.utility.Vector3dVector(curr_color)
+                # pcd_prev = o3d.geometry.PointCloud()
+                # pcd_prev.points = o3d.utility.Vector3dVector(self.prior_pcd.reshape(-1, 3))
+                # pcd_curr = pcd_curr.transform(H_relative)
+                # moved, trans_matrix = move(down=down_, up=up_, base_pcd=pcd_prev, move_pcd=pcd_curr, is_begin=False)
+                # moved.transform(np.linalg.inv(trans_matrix))
+                # moved.transform(np.linalg.inv(H_relative))
+                # world_points[0] = np.asarray(moved.points).reshape(world_points[0].shape)
+                # colors[0] = (np.asarray(moved.colors) * 255).astype(np.uint8).reshape(colors[0].shape)
+                # H_relative = trans_matrix @ H_relative
+                # for i in range(world_points.shape[0]):
+                #     if 1 <= i < 3:
+                #         prev_frame_points = world_points[i-1].reshape(-1, 3)
+                #         curr_frame_points = world_points[i].reshape(-1, 3)
+                #         prev_frame_colors = colors[i-1].reshape(-1, 3).astype(np.float32) / 255.0
+                #         curr_frame_colors = colors[i].reshape(-1, 3).astype(np.float32) / 255.0
+                #         pcd_prev_frame = o3d.geometry.PointCloud()
+                #         pcd_prev_frame.points = o3d.utility.Vector3dVector(prev_frame_points)
+                #         pcd_prev_frame.colors = o3d.utility.Vector3dVector(prev_frame_colors)
+                #         pcd_curr_frame = o3d.geometry.PointCloud()
+                #         pcd_curr_frame.points = o3d.utility.Vector3dVector(curr_frame_points)
+                #         pcd_curr_frame.colors = o3d.utility.Vector3dVector(curr_frame_colors)
+                #         pcd_prev_frame.transform(trans_matrix)
+                #         pcd_curr_frame.transform(trans_matrix)
+                #         moved_frame, trans = move(down=down_, up=up_, base_pcd=pcd_prev_frame, move_pcd=pcd_curr_frame, is_begin=False, is_trans=False)
+                #         moved_frame = moved_frame.transform(np.linalg.inv(trans_matrix))
+                #
+                #         world_points[i] = np.asarray(moved_frame.points).reshape(world_points[i].shape)
+                #         colors[i] = (np.asarray(moved_frame.colors) * 255).astype(np.uint8).reshape(colors[i].shape)
+                    # if i == 3:
+                    #     curr_frame_points = world_points[i].reshape(-1, 3)
+                    #     curr_frame_colors = colors[i].reshape(-1, 3).astype(np.float32) / 255.0
+                    #     pcd_curr_frame = o3d.geometry.PointCloud()
+                    #     pcd_curr_frame.points = o3d.utility.Vector3dVector(curr_frame_points)
+                    #     pcd_curr_frame.colors = o3d.utility.Vector3dVector(curr_frame_colors)
+                    #     o3d.visualization.draw_geometries([pcd_curr_frame])
+                    # if i == 4:
+                    #     prev_frame_points = world_points[i-2].reshape(-1, 3)
+                    #     curr_frame_points = world_points[i].reshape(-1, 3)
+                    #     prev_frame_colors = colors[i-2].reshape(-1, 3).astype(np.float32) / 255.0
+                    #     curr_frame_colors = colors[i].reshape(-1, 3).astype(np.float32) / 255.0
+                    #     pcd_prev_frame = o3d.geometry.PointCloud()
+                    #     pcd_prev_frame.points = o3d.utility.Vector3dVector(prev_frame_points)
+                    #     pcd_prev_frame.colors = o3d.utility.Vector3dVector(prev_frame_colors)
+                    #     pcd_curr_frame = o3d.geometry.PointCloud()
+                    #     pcd_curr_frame.points = o3d.utility.Vector3dVector(curr_frame_points)
+                    #     pcd_curr_frame.colors = o3d.utility.Vector3dVector(curr_frame_colors)
+                    #     # pcd_curr_frame.transform(H_relative_temp)
+                    #     # pcd_prev_frame.transform(H_relative_temp)
+                    #     moved_frame, trans = move(down=down_, up=up_, base_pcd=pcd_prev_frame, move_pcd=pcd_curr_frame, is_begin=False, is_trans=True)
+                    #     moved_frame = moved_frame.transform(np.linalg.inv(trans))
+                    #     # moved_frame = moved_frame.transform(np.linalg.inv(H_relative_temp))
+                    #
+                    #     world_points[i] = np.asarray(moved_frame.points).reshape(world_points[i].shape)
+                    #     colors[i] = (np.asarray(moved_frame.colors) * 255).astype(np.uint8).reshape(colors[i].shape)
+
+                # if prior_pcd_num >= 1:
+                #     # H_relative = ransac_projective(current_pts, self.prior_pcd)
+                #
+                #     prev_pcd = prior_submap.get_all_points().reshape(-1, 3)
+                #     prev_colors = prior_submap.get_all_colors().reshape(-1, 3).astype(np.float32) / 255.0
+                #     pcd_prev = o3d.geometry.PointCloud()
+                #     pcd_prev.points = o3d.utility.Vector3dVector(prev_pcd)
+                #     color_prev = o3d.utility.Vector3dVector(prev_colors)
+                #     pcd_prev.colors = color_prev
+                #     curr_pcd = world_points.reshape(-1, 3)
+                #     curr_colors = colors.reshape(-1, 3).astype(np.float32) / 255.0
+                #     pcd_curr = o3d.geometry.PointCloud()
+                #     pcd_curr.points = o3d.utility.Vector3dVector(curr_pcd)
+                #     color_curr = o3d.utility.Vector3dVector(curr_colors)
+                #     pcd_curr.colors = color_curr
+                #     pcd_curr = pcd_curr.transform(H_relative)
+                #     moved, trans_matrix = move(down=-0.05, up=0.05, base_pcd=pcd_prev, move_pcd=pcd_curr, is_begin=False)
+                #     for i in range(world_points.shape[0]):
+                #         if i >= 1:
+                #             prev_frame_points = world_points[i-1,...].reshape(-1, 3)
+                #             curr_frame_points = world_points[i,...].reshape(-1, 3)
+                #             prev_frame_colors = colors[i-1,...].reshape(-1, 3).astype(np.float32) / 255.0
+                #             curr_frame_colors = colors[i,...].reshape(-1, 3).astype(np.float32) / 255.0
+                #             pcd_prev_frame = o3d.geometry.PointCloud()
+                #             pcd_prev_frame.points = o3d.utility.Vector3dVector(prev_frame_points)
+                #             pcd_prev_frame.colors = o3d.utility.Vector3dVector(prev_frame_colors)
+                #             pcd_curr_frame = o3d.geometry.PointCloud()
+                #             pcd_curr_frame.points = o3d.utility.Vector3dVector(curr_frame_points)
+                #             pcd_curr_frame.colors = o3d.utility.Vector3dVector(curr_frame_colors)
+                #             pcd_curr_frame.transform(H_relative)
+                #             pcd_prev_frame.transform(H_relative)
+                #             pcd_prev_frame.transform(trans_matrix)
+                #             pcd_curr_frame.transform(trans_matrix)
+                #             moved_frame, _ = move(down=-0.05, up=0.05, base_pcd=pcd_prev_frame, move_pcd=pcd_curr_frame, is_begin=False, is_trans=False)
+                #             moved_frame = moved_frame.transform(np.linalg.inv(trans_matrix))
+                #             # moved_frame = moved_frame.transform(np.linalg.inv(H_relative))
+                #
+                #             world_points[i,...] = np.asarray(moved_frame.points).reshape(world_points[i,...].shape)
+                #             colors[i,...] = (np.asarray(moved_frame.colors) * 255).astype(np.uint8).reshape(colors[i,...].shape)
+                    # o3d.visualization.draw_geometries([moved_frame])
                     # moved = pcd_curr
                     # trans_matrix = np.eye(4)
-                    moved = moved.transform(np.linalg.inv(trans_matrix))
-                    moved = moved.transform(np.linalg.inv(H_relative))
-                    moved_points = np.asarray(moved.points)
-                    moved_colors = np.asarray(moved.colors)
-                    colors = (moved_colors * 255).astype(np.uint8).reshape(colors.shape)
-                    world_points = moved_points.reshape(world_points.shape)
-                    H_relative = trans_matrix @ H_relative
-                else:
-                    H_relative = ransac_projective(current_pts, self.prior_pcd)
+
+                    # moved = moved.transform(np.linalg.inv(trans_matrix))
+                    # moved = moved.transform(np.linalg.inv(H_relative))
+                    # o3d.visualization.draw_geometries([moved])
+                    # moved_points = np.asarray(moved.points)
+                    # moved_colors = np.asarray(moved.colors)
+                    # colors = (moved_colors * 255).astype(np.uint8).reshape(colors.shape)
+                    # world_points = moved_points.reshape(world_points.shape)
+                    # H_relative = trans_matrix @ H_relative
                 # o3d.visualization.draw_geometries([pcd_prev, moved])
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
 
 
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
+            print("==============", non_lc_frame)
+            # prev_frame_points = world_points[non_lc_frame-1].reshape(-1, 3)
+            # curr_frame_points = world_points[non_lc_frame].reshape(-1, 3)
+            # prev_frame_colors = colors[non_lc_frame-1].reshape(-1, 3).astype(np.float32) / 255.0
+            # curr_frame_colors = colors[non_lc_frame].reshape(-1, 3).astype(np.float32) / 255.0
+            # pcd_prev_frame = o3d.geometry.PointCloud()
+            # pcd_prev_frame.points = o3d.utility.Vector3dVector(prev_frame_points)
+            # pcd_prev_frame.colors = o3d.utility.Vector3dVector(prev_frame_colors)
+            # pcd_curr_frame = o3d.geometry.PointCloud()
+            # pcd_curr_frame.points = o3d.utility.Vector3dVector(curr_frame_points)
+            # pcd_curr_frame.colors = o3d.utility.Vector3dVector(curr_frame_colors)
+            # pcd_prev_frame.transform(trans_matrix)
+            # pcd_curr_frame.transform(trans_matrix)
+            # moved_frame, trans = move(down=down_, up=up_, base_pcd=pcd_prev_frame, move_pcd=pcd_curr_frame, is_begin=False, is_trans=False)
+            # moved_frame = moved_frame.transform(np.linalg.inv(trans_matrix))
+            #
+            # world_points[non_lc_frame] = np.asarray(moved_frame.points).reshape(world_points[i].shape)
+            # colors[non_lc_frame] = (np.asarray(moved_frame.colors) * 255).astype(np.uint8).reshape(colors[i].shape)
+
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
 
             self.prior_pcd = pts_cam0_camn
             self.prior_conf = conf[non_lc_frame,...].reshape(-1)
+
             # pcd = o3d.geometry.PointCloud()
             # pcd.points = o3d.utility.Vector3dVector(pts_cam0_camn)
             # pcd.colors = o3d.utility.Vector3dVector(colors[non_lc_frame,...].reshape(-1, 3).astype(np.float32) / 255.0)
@@ -376,6 +562,15 @@ class Solver:
         self.current_working_submap.add_all_poses(cam_to_world)
         self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
         self.current_working_submap.set_conf_masks(conf) # TODO should make this work for point cloud conf as well
+        curr_pcd = self.current_working_submap.get_points_in_world_frame()
+        curr_colors = self.current_working_submap.get_points_colors().astype(np.float32) / 255.0
+        pcd_curr = o3d.geometry.PointCloud()
+        pcd_curr.points = o3d.utility.Vector3dVector(curr_pcd)
+        pcd_curr.colors = o3d.utility.Vector3dVector(curr_colors)
+        # pcd_curr.transform(H_relative_test)
+        # pcd_curr.transform()
+        o3d.io.write_point_cloud(f"./test_pcd/{self.num}.pcd", pcd_curr)
+        self.num += 1
         # Add in loop closures if any were detected.
         # print("================", len(self.current_working_submap.frame_ids))
         # for index in range(len(self.current_working_submap.frame_ids)):
@@ -431,40 +626,40 @@ class Solver:
                 pose_world_query = gtsam.Pose3(pose_world_query)
                 H_relative_lc = pose_world_detected.between(pose_world_query).matrix()
             else:
-                points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
-                points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
-                H_relative_lc = ransac_projective(points_world_query, points_world_detected)
                 # points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
-                # points_world_query    = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
-                # colors_detected = self.map.get_submap(loop.detected_submap_id).get_frame_color(loop.detected_submap_frame).reshape(-1, 3).astype(np.float32) / 255.0
-                # colors_query    = self.current_working_submap.get_frame_color(loop_index).reshape(-1, 3).astype(np.float32) / 255.0
+                # points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
                 # H_relative_lc = ransac_projective(points_world_query, points_world_detected)
-                # points_query_in_detected = apply_homography(H_relative_lc, points_world_query)
-                # pcd_det  = o3d.geometry.PointCloud()
-                # pcd_det.points  = o3d.utility.Vector3dVector(points_world_detected)
-                # pcd_qry  = o3d.geometry.PointCloud()
-                # pcd_qry.points  = o3d.utility.Vector3dVector(points_query_in_detected)
-                # pcd_det.colors = o3d.utility.Vector3dVector(colors_detected)
-                # pcd_qry.colors = o3d.utility.Vector3dVector(colors_query)
-                # moved_lc, trans_lc = move(down=-0.05, up=0.05, base_pcd=pcd_det, move_pcd=pcd_qry, is_begin=False)
-                # # o3d.visualization.draw_geometries([moved_lc, pcd_qry, pcd_det])
-                # moved_lc = moved_lc.transform(np.linalg.inv(trans_lc))
-                # moved_lc = moved_lc.transform(np.linalg.inv(H_relative_lc))
-                # moved_points = np.asarray(moved_lc.points)
-                # moved_colors = np.asarray(moved_lc.colors)
-                # moved_colors = (moved_colors * 255).astype(np.uint8)
-                # world_points[loop_index] = moved_points.reshape(world_points[loop_index].shape)
-                # # o3d.visualization.draw_geometries([moved_lc, pcd_qry])
-                # self.current_working_submap.set_frame_pointcloud(loop_index, moved_points.reshape(self.current_working_submap.get_frame_pointcloud(loop_index).shape))
-                # self.current_working_submap.set_frame_color(loop_index, moved_colors.reshape(self.current_working_submap.get_frame_color(loop_index).shape))
-                # H_relative_lc = trans_lc @ H_relative_lc
+                points_world_detected = self.map.get_submap(loop.detected_submap_id).get_frame_pointcloud(loop.detected_submap_frame).reshape(-1, 3)
+                points_world_query    = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
+                colors_detected = self.map.get_submap(loop.detected_submap_id).get_frame_color(loop.detected_submap_frame).reshape(-1, 3).astype(np.float32) / 255.0
+                colors_query    = self.current_working_submap.get_frame_color(loop_index).reshape(-1, 3).astype(np.float32) / 255.0
+                H_relative_lc = ransac_projective(points_world_query, points_world_detected)
+                points_query_in_detected = apply_homography(H_relative_lc, points_world_query)
+                pcd_det  = o3d.geometry.PointCloud()
+                pcd_det.points  = o3d.utility.Vector3dVector(points_world_detected)
+                pcd_qry  = o3d.geometry.PointCloud()
+                pcd_qry.points  = o3d.utility.Vector3dVector(points_query_in_detected)
+                pcd_det.colors = o3d.utility.Vector3dVector(colors_detected)
+                pcd_qry.colors = o3d.utility.Vector3dVector(colors_query)
+                moved_lc, trans_lc = move(down=down_, up=up_, base_pcd=pcd_det, move_pcd=pcd_qry, is_begin=False)
+                # o3d.visualization.draw_geometries([moved_lc, pcd_qry, pcd_det])
+                moved_lc = moved_lc.transform(np.linalg.inv(trans_lc))
+                moved_lc = moved_lc.transform(np.linalg.inv(H_relative_lc))
+
+                moved_points = np.asarray(moved_lc.points)
+                moved_colors = np.asarray(moved_lc.colors)
+                moved_colors = (moved_colors * 255).astype(np.uint8)
+                world_points[loop_index] = moved_points.reshape(world_points[loop_index].shape)
+                # o3d.visualization.draw_geometries([moved_lc, pcd_qry])
+                self.current_working_submap.set_frame_pointcloud(loop_index, moved_points.reshape(self.current_working_submap.get_frame_pointcloud(loop_index).shape))
+                self.current_working_submap.set_frame_color(loop_index, moved_colors.reshape(self.current_working_submap.get_frame_color(loop_index).shape))
+                H_relative_lc = trans_lc @ H_relative_lc
+                # H_relative_lc = H_relative_lc @ trans_lc
+                # o3d.io.write_point_cloud("detected.pcd", pcd_det)
+                # o3d.io.write_point_cloud("query.pcd", pcd_qry)
                 #
-                # # H_relative_lc = H_relative_lc @ trans_lc
-                # # o3d.io.write_point_cloud("detected.pcd", pcd_det)
-                # # o3d.io.write_point_cloud("query.pcd", pcd_qry)
-                # #
-                # # o3d.io.write_point_cloud(f"./test_pcd/{num}.pcd", moved_lc)
-                # # o3d.visualization.draw_geometries([moved_lc])
+                # o3d.io.write_point_cloud(f"./test_pcd/{num}.pcd", moved_lc)
+                # o3d.visualization.draw_geometries([moved_lc])
 
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
             self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
