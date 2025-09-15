@@ -166,7 +166,7 @@ def main():
             # solver.test_add_points(predictions, real_t_subset)
 
             solver.add_points(predictions)
-            # solver.graph.optimize()
+            solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
             loop_closure_detected = len(predictions["detected_loops"]) > 0
 
